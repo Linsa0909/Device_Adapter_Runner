@@ -1,0 +1,19 @@
+# Runtime artifacts
+ops/artifacts/*
+!ops/artifacts/.gitkeep
+
+# Generated device contexts are project-specific.
+ops/contexts/*
+!ops/contexts/.gitkeep
+
+# Build outputs and logs
+build/
+dist/
+logs/
+test_videos/
+**/__pycache__/
+*.pyc
+
+# Local environment
+.env
+.DS_Store

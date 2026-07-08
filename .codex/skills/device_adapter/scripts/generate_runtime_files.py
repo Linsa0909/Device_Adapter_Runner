@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import os
+from pathlib import Path
+
+
+def stage(name, status, exit_code=None):
+    suffix = f" exit_code={exit_code}" if exit_code is not None else ""
+    print(f"[AGENT_STAGE] stage={name} status={status}{suffix}")
+
+
+def write_failure(stage_name, command, exit_code, message, **extra):
+    out = Path("ops/artifacts/last_failure.json")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"stage": stage_name, "command": command, "exit_code": exit_code, "message": message}
+    payload.update(extra)
+    out.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def load_manifest(context_id):
+    path = Path(f"ops/contexts/{context_id}.manifest.json")
+    if not path.exists():
+        raise FileNotFoundError(path)
+    return path, json.loads(path.read_text(encoding="utf-8"))
+
+
+def executable_sources(source_files):
+    result = []
+    for file_name in source_files:
+        path = Path(file_name)
+        if path.suffix.lower() not in {".c", ".cc", ".cpp", ".cxx"} or not path.exists():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        if "int main(" in text or "int main (" in text:
+            result.append(path.as_posix())
+    return result
+
+
+def write_if_missing(path, content, mode=None):
+    p = Path(path)
+    if p.exists():
+        return False
+    p.write_text(content, encoding="utf-8")
+    if mode is not None:
+        os.chmod(p, mode)
+    return True
+
+
+def update_package_files(manifest_path, manifest):
+    includes = manifest.get("include") or []
+    excludes = set(manifest.get("exclude") or [])
+    package_files = []
+    missing = []
+    for item in includes:
+        path = Path(item)
+        if not path.exists():
+            missing.append(item)
+            continue
+        if path.is_file():
+            package_files.append(path.as_posix())
+            continue
+        for child in sorted(path.rglob("*")):
+            if child.is_file() and not any(child.match(pattern) for pattern in excludes):
+                package_files.append(child.as_posix())
+    package_files = list(dict.fromkeys(package_files))
+    generated_files = set((manifest.get("build") or {}).get("generated_runtime_files") or [])
+    manifest.setdefault("generated", {})["missing_paths"] = [item for item in missing if item not in generated_files]
+    manifest["generated"]["package_file_count"] = len(package_files)
+    manifest.setdefault("docker", {})["dockerfile"] = "Dockerfile" if Path("Dockerfile").exists() else manifest.get("docker", {}).get("dockerfile")
+    manifest["docker"]["compose_file"] = "docker-compose.yml" if Path("docker-compose.yml").exists() else manifest["docker"].get("compose_file")
+    package_list = Path(manifest.get("package_files_file") or f"ops/artifacts/{manifest['context_id']}.package_files.txt")
+    package_list.parent.mkdir(parents=True, exist_ok=True)
+    package_list.write_text("\n".join(package_files) + ("\n" if package_files else ""), encoding="utf-8")
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("context_id")
+    args = parser.parse_args()
+    command = "generate_runtime_files.py " + args.context_id
+
+    stage("stage2_context_validate", "start")
+    try:
+        manifest_path, manifest = load_manifest(args.context_id)
+    except FileNotFoundError as exc:
+        stage("stage2_context_validate", "fail", 2)
+        write_failure("stage2_context_validate", command, 2, f"Manifest not found: {exc}", next_action=f"/device-adapter context {args.context_id}")
+        return 2
+
+    build = manifest.get("build") or {}
+    source_files = build.get("source_files") or []
+    main_sources = executable_sources(source_files)
+    binary_name = build.get("binary_name") or args.context_id.replace("-", "_")
+    has_build_file = any(Path(name).exists() for name in ["CMakeLists.txt", "Makefile", "makefile"])
+    if not source_files and not has_build_file:
+        stage("stage2_context_validate", "fail", 3)
+        write_failure("stage2_context_validate", command, 3, "No C/C++ source files or build file found.", next_action="Run /device-adapter context after adding C++ source files or build instructions.")
+        return 3
+    if source_files and not main_sources and not has_build_file:
+        stage("stage2_context_validate", "fail", 3)
+        write_failure("stage2_context_validate", command, 3, "No C++ main() source or build file found.", next_action="Add build instructions or identify the executable source in context.")
+        return 3
+    stage("stage2_context_validate", "success")
+
+    stage("stage3_runtime_generate", "start")
+    created = []
+    compile_sources = [p for p in source_files if Path(p).suffix.lower() in {".c", ".cc", ".cpp", ".cxx"}]
+    source_list = "\n  ".join(compile_sources)
+    if source_files and write_if_missing(
+        "CMakeLists.txt",
+        f"""cmake_minimum_required(VERSION 3.16)
+project({binary_name} LANGUAGES C CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+find_package(PkgConfig QUIET)
+find_package(OpenCV QUIET)
+
+add_executable({binary_name}
+  {source_list}
+)
+
+target_include_directories({binary_name} PRIVATE
+  ${{CMAKE_SOURCE_DIR}}
+  ${{CMAKE_SOURCE_DIR}}/include
+  ${{CMAKE_SOURCE_DIR}}/inc
+  ${{CMAKE_SOURCE_DIR}}/src
+)
+
+if(OpenCV_FOUND)
+  target_link_libraries({binary_name} PRIVATE ${{OpenCV_LIBS}})
+  target_include_directories({binary_name} PRIVATE ${{OpenCV_INCLUDE_DIRS}})
+endif()
+
+target_link_directories({binary_name} PRIVATE
+  ${{CMAKE_SOURCE_DIR}}/lib
+  ${{CMAKE_SOURCE_DIR}}/libs
+  ${{CMAKE_SOURCE_DIR}}/sdk/lib
+)
+
+target_link_libraries({binary_name} PRIVATE pthread dl)
+install(TARGETS {binary_name} RUNTIME DESTINATION bin)
+""",
+    ):
+        created.append("CMakeLists.txt")
+
+    device_paths = (manifest.get("remote") or {}).get("device_paths") or []
+    device_env = device_paths[0] if device_paths else ""
+    if write_if_missing(
+        "run.sh",
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+
+echo "[RUN_STAGE] env_check start"
+if [ -n "${{DEVICE_PATH:-{device_env}}}" ] && [ ! -e "${{DEVICE_PATH:-{device_env}}}" ]; then
+  echo "Device path not found: ${{DEVICE_PATH:-{device_env}}}" >&2
+  exit 20
+fi
+
+export LD_LIBRARY_PATH="/opt/app/lib:/opt/app/libs:/opt/app/sdk/lib:${{LD_LIBRARY_PATH:-}}"
+echo "[RUN_STAGE] app_start start"
+exec /opt/app/bin/{binary_name} "$@"
+""",
+        0o755,
+    ):
+        created.append("run.sh")
+
+    if write_if_missing(
+        ".dockerignore",
+        """.git
+build
+dist
+logs
+test_videos
+**/__pycache__
+*.pyc
+ops/artifacts/*.tar
+ops/artifacts/*.tar.gz
+""",
+    ):
+        created.append(".dockerignore")
+
+    if write_if_missing(
+        "Dockerfile",
+        f"""# syntax=docker/dockerfile:1.6
+FROM --platform=$BUILDPLATFORM ubuntu:22.04 AS build
+ARG TARGETPLATFORM
+ARG TARGETARCH
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    build-essential cmake pkg-config ca-certificates \\
+    ffmpeg v4l-utils libusb-1.0-0-dev libopencv-dev \\
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY . .
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \\
+    && cmake --build build -j"$(nproc)" \\
+    && cmake --install build --prefix /opt/app
+
+FROM ubuntu:22.04 AS runtime
+ARG TARGETARCH
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \\
+    ca-certificates ffmpeg v4l-utils libusb-1.0-0 libopencv-dev \\
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /opt/app
+COPY --from=build /opt/app /opt/app
+COPY --from=build /src /opt/app/source
+COPY run.sh /opt/app/run.sh
+RUN chmod +x /opt/app/run.sh
+ENV LD_LIBRARY_PATH=/opt/app/lib:/opt/app/libs:/opt/app/sdk/lib:/opt/app/source/lib:/opt/app/source/libs:/opt/app/source/sdk/lib
+ENTRYPOINT ["/opt/app/run.sh"]
+""",
+    ):
+        created.append("Dockerfile")
+
+    image = (manifest.get("docker") or {}).get("image") or args.context_id.replace("_", "-")
+    device_block = "\n".join([f"      - {p}:{p}" for p in device_paths])
+    if write_if_missing(
+        "docker-compose.yml",
+        f"""services:
+  {image}:
+    image: {image}:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    privileged: true
+    network_mode: host
+    devices:
+{device_block if device_block else '      []'}
+    environment:
+      DEVICE_PATH: "{device_env}"
+    restart: "no"
+""",
+    ):
+        created.append("docker-compose.yml")
+
+    update_package_files(manifest_path, manifest)
+    print("created_files:")
+    for item in created:
+        print(f"- {item}")
+    stage("stage3_runtime_generate", "success")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
