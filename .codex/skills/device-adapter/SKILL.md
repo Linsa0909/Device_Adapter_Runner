@@ -18,8 +18,9 @@ The user may provide free natural language. They should not need to write YAML o
 ```
 
 Supported actions:
-- `context`: Convert natural language context into context.md, manifest.json, and package file list.
-- `adapt`: Generate or update HAL device model YAML, capability YAML, deployment YAML, and an adapter gap report.
+- `context`: Preserve natural language context/manual locations and generate packaging context.
+- `model`: Read device manuals/docs and produce `ops/contexts/<context_id>.device_spec.json`.
+- `adapt`: Apply `device_spec.json` to HAL capability YAML, device YAML, deployment YAML, and adapter gap report.
 - `package`: Package files based on generated manifest.
 - `docker-package`: Build Docker image and save image tar.
 - `deploy`: Package and deploy current project to a remote target.
@@ -32,6 +33,7 @@ Examples:
 
 ```bash
 /device-adapter context infrared_camera
+/device-adapter model infrared_camera
 /device-adapter adapt infrared_camera
 /device-adapter package infrared_camera
 /device-adapter docker-package infrared_camera -arm
@@ -80,7 +82,9 @@ If the user's context appears in the chat rather than a file, write it to a temp
 
 ## HAL/ROS2 Runtime Generation Rule
 
-The user may provide an existing HAL platform workspace rather than a standalone C++ program. If the repository contains `src/*/package.xml`, treat it as a ROS2/colcon workspace and preserve its package structure.
+The primary workflow is docs-first HAL adaptation. The user may provide only a device manual, protocol document, SDK package notes, wiring notes, and deployment context. Do not require preexisting device adapter code.
+
+If the repository contains `src/*/package.xml`, treat it as a ROS2/colcon HAL workspace and preserve its package structure.
 
 For HAL/ROS2 workspaces:
 - Include `src/`, top-level Markdown docs, launch files, config/model YAML, msg/srv definitions, and vendored `3rdparty` headers/libs.
@@ -89,7 +93,40 @@ For HAL/ROS2 workspaces:
 - Run by sourcing ROS and workspace setup files, then launching the HAL manager or the selected single-device launch.
 - For infrared/Mino17 contexts, require the `hardware_abstraction_layer/infrared_push_50fps` executable to be present after build.
 
-Use `adapt` before package/build when adding a new device to the HAL platform:
+Use this workflow when adding a new device to the HAL platform:
+
+```text
+/device-adapter context <context_id>
+/device-adapter model <context_id>
+/device-adapter adapt <context_id>
+/device-adapter package <context_id>
+/device-adapter docker-package <context_id> -arm
+```
+
+`model` is an agent step, not a deterministic parser. It reads manuals/docs and writes:
+
+```text
+ops/contexts/<context_id>.device_spec.json
+```
+
+The spec is the contract between documentation understanding and deterministic file generation. It must include:
+- `adapter_type`
+- `device`
+- `connection`
+- `capability`
+- `device_model`
+- `deployment_entry`
+- `adapter_requirements`
+
+`adapter_requirements` must capture build/runtime dependencies:
+- `apt_build`: apt packages required to compile the adapter or helper process.
+- `apt_runtime`: apt packages required on the deployed board/container.
+- `sdk_headers`: vendor SDK include paths or headers that must be present.
+- `sdk_libraries`: vendor `.so`/`.a` files, including expected architecture when known.
+- `protocol_files`: protocol parser/transport source files that must be implemented.
+- `subprocesses`: helper executables started by the adapter, their command lines, required devices, and log expectations.
+
+Then `adapt` applies the spec:
 
 ```bash
 python3 .codex/skills/device-adapter/scripts/adapt_hal_device.py <context_id>
@@ -102,6 +139,19 @@ This generates or updates:
 - `ops/artifacts/<context_id>.adapter_gaps.md`
 
 The gap report is intentional. Device documentation can define the model and deployment shape, but protocol code, SDK libraries, and factory/CMake registration still need concrete implementation or verification.
+
+After `adapt`, use `hal-adapter-builder` to implement or patch C++ adapter code from:
+- `ops/contexts/<context_id>.device_spec.json`
+- the device manual/protocol documentation
+- existing adapter examples in the HAL workspace
+
+The adapter builder may add source/header/protocol files, factory registration, and CMake entries. It must not invent undocumented protocol behavior; unresolved SDK/protocol details go into the gap report.
+
+When an adapter needs vendor libraries or external tools, prefer this order:
+- Install public dependencies through apt in the generated Dockerfile.
+- Keep vendor SDK headers/libs under HAL-owned directories such as `src/hardware_abstraction_layer/3rdparty/`.
+- Preserve separate architecture directories for `.so`/`.a` files, for example `x86_64-linux-gnu-gcc` and `aarch64-linux-gnu-gcc`.
+- If the adapter starts a child process for a camera/SDK pipeline, surface the command, stdout/stderr, exit code, and restart policy through HAL logs/events.
 
 For non-ROS C/C++ projects, the user may provide only C/C++ source files, headers, vendor libraries, and natural language notes. In that case the context flow must inspect the repository and infer package inputs from existing files instead of requiring preexisting Dockerfile/run.sh.
 
@@ -190,6 +240,8 @@ Required stages:
 
 Use focused subagents for complex commands:
 - `context-mapper` for context generation.
+- `hal-device-modeler` for manual/docs to `device_spec.json`.
+- `hal-adapter-builder` for C++ adapter/protocol implementation.
 - `package-builder` for manifest packaging.
 - `docker-builder` for Docker build/save issues.
 - `remote-deployer` for SSH transfer and remote preparation.

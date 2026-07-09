@@ -7,6 +7,8 @@ usage: stage_runner.sh <action> <context_id> [options]
 
 actions:
   package
+  model
+  adapt
   docker-package
   deploy
   test
@@ -31,6 +33,11 @@ case "$action" in
     python3 "$base_dir/generate_runtime_files.py" "$context_id" &&
     python3 "$base_dir/package_by_manifest.py" "$context_id" &&
     python3 "$base_dir/verify_package.py" "$context_id"
+    ;;
+  model)
+    echo "model is an agent step: read device manuals/docs and write ops/contexts/${context_id}.device_spec.json" >&2
+    echo "Then run: stage_runner.sh adapt ${context_id}" >&2
+    exit 2
     ;;
   adapt)
     python3 "$base_dir/adapt_hal_device.py" "$context_id" "$@"

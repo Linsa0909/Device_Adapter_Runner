@@ -55,6 +55,15 @@ def write_if_missing(path, content, mode=None):
 
 def render_ros2_runtime(context_id, manifest):
     build = manifest.get("build") or {}
+    spec = {}
+    spec_path = Path(f"ops/contexts/{context_id}.device_spec.json")
+    if spec_path.exists():
+        spec = json.loads(spec_path.read_text(encoding="utf-8"))
+    adapter_requirements = spec.get("adapter_requirements") or {}
+    apt_build = adapter_requirements.get("apt_build") or adapter_requirements.get("apt_packages") or []
+    apt_runtime = adapter_requirements.get("apt_runtime") or adapter_requirements.get("apt_packages") or []
+    apt_build_lines = "".join(f"    {pkg} \\\n" for pkg in apt_build)
+    apt_runtime_lines = "".join(f"    {pkg} \\\n" for pkg in apt_runtime)
     docker_image = (manifest.get("docker") or {}).get("image") or context_id.replace("_", "-")
     ros_distro = build.get("ros_distro") or "humble"
     ros_launch = (manifest.get("run") or {}).get("ros_launch") or "hardware_abstraction_layer manager_node.launch.py"
@@ -79,6 +88,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     libcurl4-openssl-dev libyaml-cpp-dev nlohmann-json3-dev libspdlog-dev \\
     ffmpeg v4l-utils libavdevice-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \\
     libusb-1.0-0-dev \\
+{apt_build_lines}\
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /opt/hal_ws
 COPY src ./src
@@ -93,6 +103,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \\
     curl ca-certificates python3-yaml libcurl4 libyaml-cpp0.7 libspdlog1 \\
     ffmpeg v4l-utils libavdevice58 libavcodec58 libavformat58 libavutil56 libswscale5 libswresample3 \\
     libusb-1.0-0 \\
+{apt_runtime_lines}\
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /opt/hal_ws
 COPY --from=build /opt/hal_ws/install ./install
