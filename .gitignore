@@ -17,3 +17,6 @@ test_videos/
 # Local environment
 .env
 .DS_Store
+
+# Local copied target projects for inspection/testing
+workspaces/

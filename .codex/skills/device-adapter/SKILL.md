@@ -76,9 +76,18 @@ python3 .codex/skills/device-adapter/scripts/context_to_manifest.py <context_id>
 
 If the user's context appears in the chat rather than a file, write it to a temporary file or directly to `ops/contexts/<context_id>.context.md`, then run the script.
 
-## C++ Runtime Generation Rule
+## HAL/ROS2 Runtime Generation Rule
 
-The user may provide only C/C++ source files, headers, vendor libraries, and natural language notes. In that case the context flow must inspect the repository and infer package inputs from existing files instead of requiring preexisting Dockerfile/run.sh.
+The user may provide an existing HAL platform workspace rather than a standalone C++ program. If the repository contains `src/*/package.xml`, treat it as a ROS2/colcon workspace and preserve its package structure.
+
+For HAL/ROS2 workspaces:
+- Include `src/`, top-level Markdown docs, launch files, config/model YAML, msg/srv definitions, and vendored `3rdparty` headers/libs.
+- Do not generate a top-level `CMakeLists.txt`.
+- Generate Docker/runtime files for `colcon build`, not plain `cmake`.
+- Run by sourcing ROS and workspace setup files, then launching the HAL manager or the selected single-device launch.
+- For infrared/Mino17 contexts, require the `hardware_abstraction_layer/infrared_push_50fps` executable to be present after build.
+
+For non-ROS C/C++ projects, the user may provide only C/C++ source files, headers, vendor libraries, and natural language notes. In that case the context flow must inspect the repository and infer package inputs from existing files instead of requiring preexisting Dockerfile/run.sh.
 
 When Docker/runtime files are missing, generate them before package/build:
 
@@ -91,13 +100,14 @@ Generated runtime files may include:
 - `docker-compose.yml`
 - `.dockerignore`
 - `run.sh`
-- `CMakeLists.txt` only when the project has C/C++ files but no known build file
+- `CMakeLists.txt` only when the project is not ROS2/colcon and has C/C++ files but no known build file
 
 Do not modify C++ business logic by default. Build-system and runtime files are allowed.
 
 For native libraries and SDKs:
 - Keep vendor `.so`, `.a`, headers, and SDK directories in the manifest when they are part of the repository.
 - Build inside the target platform container with Docker buildx so apt packages, OpenCV, ffmpeg, and native dependencies resolve for `linux/amd64` or `linux/arm64`.
+- For HAL workspaces, use the repository's existing architecture-specific library directories such as `3rdparty/lib/x86_64-linux-gnu-gcc` and `3rdparty/lib/aarch64-linux-gnu-gcc`; do not flatten or rename them.
 - Prefer one single-platform image build per architecture, then save one image tar per architecture. Do not rely on a multi-platform `--load`.
 - On x86 WSL, arm64 packaging builds and saves an arm64 image tar locally, but does not run the arm64 container locally unless `--smoke` is passed and QEMU/binfmt is configured. The normal arm64 runtime proof is `/device-adapter deploy` plus `/device-adapter test` on an arm64 remote target.
 

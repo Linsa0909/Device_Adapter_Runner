@@ -10,6 +10,8 @@ from pathlib import Path
 DEFAULT_EXCLUDES = [
     ".git",
     ".git/**",
+    "**/.git",
+    "**/.git/**",
     "__pycache__",
     "**/__pycache__/**",
     "*.pyc",
@@ -19,6 +21,10 @@ DEFAULT_EXCLUDES = [
     "dist/**",
     "logs",
     "logs/**",
+    "log",
+    "log/**",
+    "install",
+    "install/**",
     "test_videos",
     "test_videos/**",
     "ops/artifacts/*.tar.gz",
@@ -85,7 +91,31 @@ def looks_like_path(value):
         return False
     if value.startswith("-"):
         return False
-    return "/" in value or "." in Path(value).name or value in {"src", "configs", "run.sh", "Dockerfile", "docker-compose.yml", "requirements.txt"}
+    return "/" in value or "." in Path(value).name or value in {"src", "configs", "config", "run.sh", "Dockerfile", "docker-compose.yml", "requirements.txt"}
+
+
+def discover_ros2_workspace(excludes):
+    packages = []
+    package_files = []
+    launch_files = []
+    for package_xml in sorted(Path(".").glob("src/*/package.xml")):
+        if is_excluded(package_xml, excludes):
+            continue
+        package_dir = package_xml.parent
+        package_files.append(package_xml.as_posix())
+        package_name = package_dir.name
+        try:
+            text = package_xml.read_text(encoding="utf-8", errors="ignore")
+            match = re.search(r"<name>\s*([^<]+)\s*</name>", text)
+            if match:
+                package_name = match.group(1).strip()
+        except OSError:
+            pass
+        packages.append({"name": package_name, "path": package_dir.as_posix()})
+    for launch_file in sorted(Path(".").glob("src/*/launch/*.launch.py")):
+        if not is_excluded(launch_file, excludes):
+            launch_files.append(launch_file.as_posix())
+    return packages, package_files, launch_files
 
 
 def discover_cpp_project(excludes):
@@ -214,13 +244,21 @@ def main():
         ["入口脚本", "入口", "entrypoint"],
         ["Dockerfile"],
         ["docker-compose"],
-        ["主要实现代码", "主要代码", "代码"],
+        ["主要实现代码", "主要代码", "源码", "源代码"],
         ["运行配置", "配置"],
         ["Python 依赖", "依赖"],
     ):
         includes.extend(extract_after_markers(text, marker_group))
 
+    ros_packages, ros_package_files, ros_launch_files = discover_ros2_workspace(excludes)
     cpp_discovered, cpp_files, lib_files, build_files = discover_cpp_project(excludes)
+    is_ros2_workspace = bool(ros_packages)
+
+    if is_ros2_workspace and "src" not in includes and Path("src").exists():
+        includes.append("src")
+    for doc in sorted(Path(".").glob("*.md")):
+        if not is_excluded(doc, excludes):
+            includes.append(doc.as_posix())
 
     if not includes:
         for default in ["run.sh", "Dockerfile", "docker-compose.yml", "requirements.txt", "src", "configs"]:
@@ -251,7 +289,7 @@ def main():
             runtime_generated.append(generated_name)
             if generated_name not in includes:
                 includes.append(generated_name)
-    if has_cpp and not any(Path(name).exists() for name in ["CMakeLists.txt", "Makefile", "makefile"]):
+    if has_cpp and not is_ros2_workspace and not any(Path(name).exists() for name in ["CMakeLists.txt", "Makefile", "makefile"]):
         runtime_generated.append("CMakeLists.txt")
         if "CMakeLists.txt" not in includes:
             includes.append("CMakeLists.txt")
@@ -285,15 +323,22 @@ def main():
         "run": {
             "entrypoint": "run.sh" if "run.sh" in includes or Path("run.sh").exists() else None,
             "test_timeout_seconds": 60,
+            "smoke_timeout_seconds": 20,
             "success_markers": [],
+            "ros_launch": "hardware_abstraction_layer manager_node.launch.py" if any(p["name"] == "hardware_abstraction_layer" for p in ros_packages) else None,
         },
         "build": {
             "language": "cpp" if has_cpp else "unknown",
+            "build_system": "ros2_colcon" if is_ros2_workspace else "cmake" if has_cpp else "unknown",
+            "ros_distro": "humble" if is_ros2_workspace else None,
+            "ros_packages": ros_packages,
+            "ros_launch_files": ros_launch_files,
             "source_files": cpp_files[:200],
             "library_files": lib_files[:200],
-            "build_files": build_files[:100],
+            "build_files": unique(build_files + ros_package_files)[:100],
             "generated_runtime_files": runtime_generated,
             "binary_name": args.context_id.replace("-", "_"),
+            "required_ros_executables": ["hardware_abstraction_layer/infrared_push_50fps"] if re.search(r"infrared|红外|mino17", text, re.I) else [],
         },
         "generated": {
             "missing_paths": blocking_missing,
