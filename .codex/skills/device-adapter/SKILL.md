@@ -1,6 +1,6 @@
 ---
-name: device_adapter
-description: Use this skill when the user invokes /device-adapter commands for context, package, docker-package, deploy, test, loop, logs, or rerun in unmanned-system device projects.
+name: device-adapter
+description: Use this skill when the user invokes /device-adapter or device-adapter commands for context, package, docker-package, deploy, test, loop, logs, or rerun in unmanned-system device projects.
 ---
 
 # Device Adapter Skill
@@ -71,7 +71,7 @@ ops/artifacts/<context_id>.package_files.txt
 Use the script when possible:
 
 ```bash
-python3 .codex/skills/device_adapter/scripts/context_to_manifest.py <context_id> --context-file <path>
+python3 .codex/skills/device-adapter/scripts/context_to_manifest.py <context_id> --context-file <path>
 ```
 
 If the user's context appears in the chat rather than a file, write it to a temporary file or directly to `ops/contexts/<context_id>.context.md`, then run the script.
@@ -83,7 +83,7 @@ The user may provide only C/C++ source files, headers, vendor libraries, and nat
 When Docker/runtime files are missing, generate them before package/build:
 
 ```bash
-python3 .codex/skills/device_adapter/scripts/generate_runtime_files.py <context_id>
+python3 .codex/skills/device-adapter/scripts/generate_runtime_files.py <context_id>
 ```
 
 Generated runtime files may include:
@@ -116,7 +116,7 @@ Allowed by default:
 - package files
 - config files
 - ops/
-- .codex/skills/device_adapter/scripts/
+- .codex/skills/device-adapter/scripts/
 
 Avoid editing business source code unless the user passes `--allow-code`.
 
@@ -151,13 +151,13 @@ Required stages:
 
 ## Script Map
 
-- Context: `python3 .codex/skills/device_adapter/scripts/context_to_manifest.py <context_id>`
-- Package: `python3 .codex/skills/device_adapter/scripts/package_by_manifest.py <context_id>`
-- Docker: `bash .codex/skills/device_adapter/scripts/docker_package.sh <context_id> -arm`
-- Generate runtime files: `python3 .codex/skills/device_adapter/scripts/generate_runtime_files.py <context_id>`
-- Deploy: `bash .codex/skills/device_adapter/scripts/remote_deploy.sh <context_id> --host <host> --user <user> -arm`
-- Test: `bash .codex/skills/device_adapter/scripts/remote_test.sh <context_id> --host <host> --user <user>`
-- Staged loop helper: `bash .codex/skills/device_adapter/scripts/stage_runner.sh <action> <context_id> [options]`
+- Context: `python3 .codex/skills/device-adapter/scripts/context_to_manifest.py <context_id>`
+- Package: `python3 .codex/skills/device-adapter/scripts/package_by_manifest.py <context_id>`
+- Docker: `bash .codex/skills/device-adapter/scripts/docker_package.sh <context_id> -arm`
+- Generate runtime files: `python3 .codex/skills/device-adapter/scripts/generate_runtime_files.py <context_id>`
+- Deploy: `bash .codex/skills/device-adapter/scripts/remote_deploy.sh <context_id> --host <host> --user <user> -arm`
+- Test: `bash .codex/skills/device-adapter/scripts/remote_test.sh <context_id> --host <host> --user <user>`
+- Staged loop helper: `bash .codex/skills/device-adapter/scripts/stage_runner.sh <action> <context_id> [options]`
 
 ## Subagent Routing
 

@@ -23,7 +23,7 @@ Do not:
 - hide failures
 
 Recommended command:
-- bash .codex/skills/device_adapter/scripts/remote_test.sh <context_id> --host <host> --user <user>
+- bash .codex/skills/device-adapter/scripts/remote_test.sh <context_id> --host <host> --user <user>
 
 Final output:
 - test command

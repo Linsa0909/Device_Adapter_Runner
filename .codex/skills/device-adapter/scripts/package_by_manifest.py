@@ -28,7 +28,7 @@ def main():
     manifest_path = Path(f"ops/contexts/{args.context_id}.manifest.json")
     if not manifest_path.exists():
         stage("stage1_context_load", "fail", 2)
-        write_failure("stage1_context_load", command, 2, f"Manifest not found: {manifest_path}", next_action=f"$device_adapter context {args.context_id}")
+        write_failure("stage1_context_load", command, 2, f"Manifest not found: {manifest_path}", next_action=f"/device-adapter context {args.context_id}")
         return 2
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     stage("stage1_context_load", "success")
@@ -44,7 +44,7 @@ def main():
             "Manifest contains missing include paths.",
             missing_path=generated_missing[0],
             missing_paths=generated_missing,
-            next_action=f"Create missing files or rerun $device_adapter context {args.context_id} with corrected context.",
+            next_action=f"Create missing files or rerun /device-adapter context {args.context_id} with corrected context.",
         )
         return 4
     package_files_path = Path(manifest.get("package_files_file", f"ops/artifacts/{args.context_id}.package_files.txt"))

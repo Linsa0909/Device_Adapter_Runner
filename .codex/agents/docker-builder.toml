@@ -30,7 +30,7 @@ Native dependency policy:
 - If a vendor library is architecture-specific and only one architecture is present, fail with a clear architecture mismatch instead of producing a misleading image.
 
 Recommended command:
-- bash .codex/skills/device_adapter/scripts/docker_package.sh <context_id> -arm
+- bash .codex/skills/device-adapter/scripts/docker_package.sh <context_id> -arm
 
 Final output:
 - image name

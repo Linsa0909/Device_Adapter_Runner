@@ -65,8 +65,8 @@ Use the Codex command form:
 The scripts can also be run directly:
 
 ```bash
-bash .codex/skills/device_adapter/scripts/stage_runner.sh package infrared_camera
-bash .codex/skills/device_adapter/scripts/stage_runner.sh docker-package infrared_camera -arm
+bash .codex/skills/device-adapter/scripts/stage_runner.sh package infrared_camera
+bash .codex/skills/device-adapter/scripts/stage_runner.sh docker-package infrared_camera -arm
 ```
 
 ## Natural Language Context Example

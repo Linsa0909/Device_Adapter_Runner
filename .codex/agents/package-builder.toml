@@ -22,7 +22,7 @@ Do not:
 - modify business source code
 
 Recommended command:
-- python3 .codex/skills/device_adapter/scripts/package_by_manifest.py <context_id>
+- python3 .codex/skills/device-adapter/scripts/package_by_manifest.py <context_id>
 
 Failure output:
 Write ops/artifacts/last_failure.json with stage, command, exit_code, missing_path if any, and next_action.

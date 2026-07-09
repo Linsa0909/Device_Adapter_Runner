@@ -88,8 +88,8 @@ print((m.get("docker") or {}).get("dockerfile") or "Dockerfile")
 PY
 )"
 if [ ! -f "$dockerfile" ]; then
-  if [ -f ".codex/skills/device_adapter/scripts/generate_runtime_files.py" ]; then
-    python3 .codex/skills/device_adapter/scripts/generate_runtime_files.py "$context_id" || exit $?
+  if [ -f ".codex/skills/device-adapter/scripts/generate_runtime_files.py" ]; then
+    python3 .codex/skills/device-adapter/scripts/generate_runtime_files.py "$context_id" || exit $?
   fi
   if [ ! -f "$dockerfile" ]; then
     stage stage4_docker_package fail 4
@@ -113,7 +113,7 @@ case "$arch" in
   *) platform="$arch"; suffix="$(echo "$arch" | tr '/:' '__')" ;;
 esac
 
-python3 .codex/skills/device_adapter/scripts/verify_native_deps.py "$context_id" --arch "$suffix" || exit $?
+python3 .codex/skills/device-adapter/scripts/verify_native_deps.py "$context_id" --arch "$suffix" || exit $?
 
 image="$(python3 - "$manifest" <<'PY'
 import json, sys
@@ -224,7 +224,7 @@ PY
     echo "smoke_skip_report: $skip_report"
     stage stage8_container_smoke_test success
   else
-    bash .codex/skills/device_adapter/scripts/docker_smoke_test.sh "$context_id" "${image}:${tag}" "$suffix" || exit $?
+    bash .codex/skills/device-adapter/scripts/docker_smoke_test.sh "$context_id" "${image}:${tag}" "$suffix" || exit $?
   fi
 else
   stage stage8_container_smoke_test start

@@ -23,7 +23,7 @@ Never:
 - disable SSH host checks unless the parent workflow explicitly allows it
 
 Recommended command:
-- bash .codex/skills/device_adapter/scripts/remote_deploy.sh <context_id> --host <host> --user <user> -arm
+- bash .codex/skills/device-adapter/scripts/remote_deploy.sh <context_id> --host <host> --user <user> -arm
 
 Final output:
 - remote host
