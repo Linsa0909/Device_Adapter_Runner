@@ -19,6 +19,7 @@ The user may provide free natural language. They should not need to write YAML o
 
 Supported actions:
 - `context`: Convert natural language context into context.md, manifest.json, and package file list.
+- `adapt`: Generate or update HAL device model YAML, capability YAML, deployment YAML, and an adapter gap report.
 - `package`: Package files based on generated manifest.
 - `docker-package`: Build Docker image and save image tar.
 - `deploy`: Package and deploy current project to a remote target.
@@ -31,6 +32,7 @@ Examples:
 
 ```bash
 /device-adapter context infrared_camera
+/device-adapter adapt infrared_camera
 /device-adapter package infrared_camera
 /device-adapter docker-package infrared_camera -arm
 /device-adapter docker-package infrared_camera -x86
@@ -86,6 +88,20 @@ For HAL/ROS2 workspaces:
 - Generate Docker/runtime files for `colcon build`, not plain `cmake`.
 - Run by sourcing ROS and workspace setup files, then launching the HAL manager or the selected single-device launch.
 - For infrared/Mino17 contexts, require the `hardware_abstraction_layer/infrared_push_50fps` executable to be present after build.
+
+Use `adapt` before package/build when adding a new device to the HAL platform:
+
+```bash
+python3 .codex/skills/device-adapter/scripts/adapt_hal_device.py <context_id>
+```
+
+This generates or updates:
+- `src/hardware_abstraction_layer/model/capability_groups/<capability>.capability.yaml`
+- `src/hardware_abstraction_layer/model/devices/<adapter>.device.yaml`
+- `src/hardware_abstraction_layer/config/deployment.yaml`
+- `ops/artifacts/<context_id>.adapter_gaps.md`
+
+The gap report is intentional. Device documentation can define the model and deployment shape, but protocol code, SDK libraries, and factory/CMake registration still need concrete implementation or verification.
 
 For non-ROS C/C++ projects, the user may provide only C/C++ source files, headers, vendor libraries, and natural language notes. In that case the context flow must inspect the repository and infer package inputs from existing files instead of requiring preexisting Dockerfile/run.sh.
 
@@ -162,6 +178,7 @@ Required stages:
 ## Script Map
 
 - Context: `python3 .codex/skills/device-adapter/scripts/context_to_manifest.py <context_id>`
+- Adapt HAL device: `python3 .codex/skills/device-adapter/scripts/adapt_hal_device.py <context_id>`
 - Package: `python3 .codex/skills/device-adapter/scripts/package_by_manifest.py <context_id>`
 - Docker: `bash .codex/skills/device-adapter/scripts/docker_package.sh <context_id> -arm`
 - Generate runtime files: `python3 .codex/skills/device-adapter/scripts/generate_runtime_files.py <context_id>`

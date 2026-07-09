@@ -32,6 +32,9 @@ case "$action" in
     python3 "$base_dir/package_by_manifest.py" "$context_id" &&
     python3 "$base_dir/verify_package.py" "$context_id"
     ;;
+  adapt)
+    python3 "$base_dir/adapt_hal_device.py" "$context_id" "$@"
+    ;;
   docker-package)
     python3 "$base_dir/generate_runtime_files.py" "$context_id" &&
     bash "$base_dir/docker_package.sh" "$context_id" "$@"
