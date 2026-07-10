@@ -127,6 +127,44 @@ else
   echo 'No docker-compose.yml or entrypoint found: $entrypoint' >&2
   exit 42
 fi
+echo '[REMOTE_STAGE] healthcheck start'
+python3 - '$context_id' <<'PY'
+import json, subprocess, sys
+from pathlib import Path
+
+context_id = sys.argv[1]
+spec_path = Path('ops/contexts') / f'{context_id}.device_spec.json'
+if not spec_path.exists():
+    print(f'healthcheck_skipped: missing {spec_path}')
+    raise SystemExit(0)
+spec = json.loads(spec_path.read_text(encoding='utf-8'))
+runtime = spec.get('runtime_requirements') or spec.get('adapter_requirements') or {}
+checks = runtime.get('healthchecks') or []
+failed = []
+for idx, check in enumerate(checks, 1):
+    if isinstance(check, str):
+        command = check
+        expect = ''
+    elif isinstance(check, dict):
+        command = check.get('command') or check.get('cmd') or ''
+        expect = check.get('expect_contains') or check.get('success_contains') or ''
+    else:
+        continue
+    if not command:
+        continue
+    print(f'[HEALTHCHECK] {idx}: {command}')
+    proc = subprocess.run(command, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    output = proc.stdout or ''
+    print(output[-4000:])
+    if proc.returncode != 0:
+        failed.append({'index': idx, 'command': command, 'exit_code': proc.returncode})
+    elif expect and expect not in output:
+        failed.append({'index': idx, 'command': command, 'missing': expect})
+if failed:
+    print(json.dumps({'healthcheck_failed': failed}, ensure_ascii=False, indent=2))
+    raise SystemExit(51)
+print('healthcheck_success')
+PY
 "
 ssh "$target" "bash -lc $(printf '%q' "$remote_script")" >"$log_file" 2>&1
 code=$?

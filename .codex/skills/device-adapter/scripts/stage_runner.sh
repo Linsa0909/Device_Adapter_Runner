@@ -6,9 +6,12 @@ usage() {
 usage: stage_runner.sh <action> <context_id> [options]
 
 actions:
+  context
   package
   model
   adapt
+  verify
+  full
   docker-package
   deploy
   test
@@ -29,73 +32,41 @@ shift 2 || true
 base_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 case "$action" in
+  context)
+    python3 "$base_dir/context_to_manifest.py" "$context_id" "$@"
+    ;;
   package)
-    python3 "$base_dir/generate_runtime_files.py" "$context_id" &&
-    python3 "$base_dir/package_by_manifest.py" "$context_id" &&
-    python3 "$base_dir/verify_package.py" "$context_id"
+    python3 "$base_dir/stage_orchestrator.py" package "$context_id" "$@"
     ;;
   model)
-    echo "model is an agent step: read device manuals/docs and write ops/contexts/${context_id}.device_spec.json" >&2
-    echo "Then run: stage_runner.sh adapt ${context_id}" >&2
-    exit 2
+    python3 "$base_dir/stage_orchestrator.py" model "$context_id" "$@"
     ;;
   adapt)
-    python3 "$base_dir/adapt_hal_device.py" "$context_id" "$@"
+    python3 "$base_dir/stage_orchestrator.py" adapt "$context_id" "$@"
+    ;;
+  verify)
+    python3 "$base_dir/stage_orchestrator.py" verify "$context_id" "$@"
+    ;;
+  full)
+    python3 "$base_dir/stage_orchestrator.py" full "$context_id" "$@"
     ;;
   docker-package)
-    python3 "$base_dir/generate_runtime_files.py" "$context_id" &&
-    bash "$base_dir/docker_package.sh" "$context_id" "$@"
+    python3 "$base_dir/stage_orchestrator.py" docker-package "$context_id" "$@"
     ;;
   deploy)
-    python3 "$base_dir/generate_runtime_files.py" "$context_id" &&
-      python3 "$base_dir/package_by_manifest.py" "$context_id" &&
-      python3 "$base_dir/verify_package.py" "$context_id" &&
-      bash "$base_dir/remote_deploy.sh" "$context_id" "$@"
+    python3 "$base_dir/stage_orchestrator.py" deploy "$context_id" "$@"
     ;;
   test)
-    bash "$base_dir/remote_test.sh" "$context_id" "$@"
+    python3 "$base_dir/stage_orchestrator.py" test "$context_id" "$@"
     ;;
   loop)
-    python3 "$base_dir/generate_runtime_files.py" "$context_id" &&
-      python3 "$base_dir/package_by_manifest.py" "$context_id" &&
-      python3 "$base_dir/verify_package.py" "$context_id" &&
-      bash "$base_dir/docker_package.sh" "$context_id" "$@" &&
-      bash "$base_dir/remote_deploy.sh" "$context_id" "$@" &&
-      bash "$base_dir/remote_test.sh" "$context_id" "$@"
+    python3 "$base_dir/stage_orchestrator.py" loop "$context_id" "$@"
     ;;
   logs)
-    bash "$base_dir/remote_test.sh" "$context_id" "$@" --timeout 1
+    python3 "$base_dir/stage_orchestrator.py" logs "$context_id" "$@"
     ;;
   rerun)
-    if [ ! -f ops/artifacts/last_failure.json ]; then
-      echo "No ops/artifacts/last_failure.json found." >&2
-      exit 2
-    fi
-    stage="$(python3 - <<'PY'
-import json
-print(json.load(open("ops/artifacts/last_failure.json", encoding="utf-8")).get("stage", ""))
-PY
-)"
-    case "$stage" in
-      stage4_package_create|stage5_package_verify|stage1_context_load|stage2_context_validate|stage3_runtime_generate)
-        python3 "$base_dir/generate_runtime_files.py" "$context_id" &&
-          python3 "$base_dir/package_by_manifest.py" "$context_id" &&
-          python3 "$base_dir/verify_package.py" "$context_id"
-        ;;
-      stage6_native_deps_verify|stage7_docker_build|stage8_image_inspect|stage8_container_smoke_test|stage9_image_save)
-        bash "$base_dir/docker_package.sh" "$context_id" "$@"
-        ;;
-      stage5_transfer|stage6_remote_prepare)
-        bash "$base_dir/remote_deploy.sh" "$context_id" "$@"
-        ;;
-      stage7_remote_run|stage8_remote_test|stage9_collect_logs)
-        bash "$base_dir/remote_test.sh" "$context_id" "$@"
-        ;;
-      *)
-        echo "Unknown failed stage: $stage" >&2
-        exit 3
-        ;;
-    esac
+    python3 "$base_dir/stage_orchestrator.py" rerun "$context_id" "$@"
     ;;
   *)
     usage

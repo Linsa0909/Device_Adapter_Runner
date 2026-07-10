@@ -187,12 +187,12 @@ def expand_includes(includes, excludes):
         if not path.exists():
             missing.append(include)
             continue
-        if path.is_file():
+        if path.is_file() or path.is_symlink():
             if not is_excluded(path, excludes):
                 files.append(path.as_posix())
             continue
         for child in sorted(path.rglob("*")):
-            if child.is_file() and not is_excluded(child, excludes):
+            if (child.is_file() or child.is_symlink()) and not is_excluded(child, excludes):
                 files.append(child.as_posix())
     return unique(files), missing
 
@@ -281,12 +281,22 @@ def main():
     host_match = re.search(r"(?:host|服务器|板子|远端).*?((?:\d{1,3}\.){3}\d{1,3})", text)
     user_match = re.search(r"(?:用户|user)\s*(?:是|为|:|：)?\s*([A-Za-z0-9_.-]+)", text)
     arch = "arm64" if re.search(r"arm64|aarch64|-arm", text, re.I) else "amd64" if re.search(r"x86|amd64", text, re.I) else "arm64"
+    wants_closed_loop_delivery = bool(
+        re.search(r"交付|完整.*包|直接运行|上板运行|板子.*运行|install\.sh|status\.sh|view\.sh|DEPLOY\.md|config\.env", text, re.I)
+    )
+    mino17_pusher_required = bool(re.search(r"mino17|infrared_push_50fps", text, re.I))
 
     runtime_generated = []
     has_cpp = bool(cpp_files)
     for generated_name in ["Dockerfile", "docker-compose.yml", ".dockerignore", "run.sh"]:
         if not Path(generated_name).exists():
             runtime_generated.append(generated_name)
+            if generated_name not in includes:
+                includes.append(generated_name)
+    if wants_closed_loop_delivery:
+        for generated_name in ["config.env", "install.sh", "status.sh", "view.sh", "DEPLOY.md"]:
+            if not Path(generated_name).exists():
+                runtime_generated.append(generated_name)
             if generated_name not in includes:
                 includes.append(generated_name)
     if has_cpp and not is_ros2_workspace and not any(Path(name).exists() for name in ["CMakeLists.txt", "Makefile", "makefile"]):
@@ -327,6 +337,11 @@ def main():
             "success_markers": [],
             "ros_launch": "hardware_abstraction_layer manager_node.launch.py" if any(p["name"] == "hardware_abstraction_layer" for p in ros_packages) else None,
         },
+        "delivery": {
+            "closed_loop_package": wants_closed_loop_delivery,
+            "required_root_files": ["config.env", "install.sh", "run.sh", "status.sh", "view.sh", "DEPLOY.md"] if wants_closed_loop_delivery else [],
+            "required_runtime_files": [],
+        },
         "build": {
             "language": "cpp" if has_cpp else "unknown",
             "build_system": "ros2_colcon" if is_ros2_workspace else "cmake" if has_cpp else "unknown",
@@ -338,7 +353,8 @@ def main():
             "build_files": unique(build_files + ros_package_files)[:100],
             "generated_runtime_files": runtime_generated,
             "binary_name": args.context_id.replace("-", "_"),
-            "required_ros_executables": ["hardware_abstraction_layer/infrared_push_50fps"] if re.search(r"infrared|红外|mino17", text, re.I) else [],
+            "required_ros_executables": ["hardware_abstraction_layer/infrared_push_50fps"] if mino17_pusher_required else [],
+            "required_elf_executables": ["hardware_abstraction_layer/infrared_push_50fps"] if mino17_pusher_required else [],
         },
         "generated": {
             "missing_paths": blocking_missing,

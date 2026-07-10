@@ -32,6 +32,36 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
+def as_list(value):
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def is_text_member(name):
+    suffix = Path(name).suffix.lower()
+    return suffix in {".sh", ".bash", ".env", ".md", ".txt", ".yaml", ".yml", ".json", ".toml"}
+
+
+def read_member_text(tar, name):
+    member = tar.getmember(name)
+    extracted = tar.extractfile(member)
+    if extracted is None:
+        return ""
+    return extracted.read().decode("utf-8", errors="ignore")
+
+
+def runtime_delivery_requirements(manifest):
+    delivery = manifest.get("delivery") or {}
+    required_root = as_list(delivery.get("required_root_files"))
+    required_runtime = as_list(delivery.get("required_runtime_files"))
+    if delivery.get("closed_loop_package") and not required_root:
+        required_root = ["config.env", "install.sh", "run.sh", "status.sh", "view.sh", "DEPLOY.md"]
+    return required_root, required_runtime
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("context_id")
@@ -65,7 +95,17 @@ def main():
 
     try:
         with tarfile.open(package_path, "r:gz") as tar:
-            names = sorted(member.name for member in tar.getmembers() if member.isfile())
+            members = tar.getmembers()
+            names = sorted(member.name for member in members if member.isfile() or member.issym())
+            executable_script_violations = []
+            for member in members:
+                if not (member.isfile() and is_text_member(member.name)):
+                    continue
+                if member.size > 1024 * 1024:
+                    continue
+                text = read_member_text(tar, member.name)
+                if "docker exec -it" in text or "docker run -it" in text or "docker exec -ti" in text or "docker run -ti" in text:
+                    executable_script_violations.append(member.name)
     except tarfile.TarError as exc:
         stage("stage5_package_verify", "fail", 5)
         write_failure("stage5_package_verify", command, 5, f"Invalid tar.gz package: {exc}")
@@ -74,7 +114,10 @@ def main():
     name_set = set(names)
     missing = sorted(required - name_set)
     excluded = sorted(name for name in names if matches_any(name, excludes))
-    if missing or excluded:
+    required_root, required_runtime = runtime_delivery_requirements(manifest)
+    missing_root = sorted(item for item in required_root if item not in name_set)
+    missing_runtime = sorted(item for item in required_runtime if item not in name_set)
+    if missing or excluded or missing_root or missing_runtime or executable_script_violations:
         stage("stage5_package_verify", "fail", 6)
         write_failure(
             "stage5_package_verify",
@@ -82,6 +125,9 @@ def main():
             6,
             "Package content verification failed.",
             missing=missing,
+            missing_root_entries=missing_root,
+            missing_runtime_files=missing_runtime,
+            interactive_docker_scripts=executable_script_violations,
             excluded_matches=excluded[:50],
             package_tree=tree_path.as_posix(),
         )
@@ -98,6 +144,8 @@ def main():
         "file_count": len(names),
         "package_tree": tree_path.as_posix(),
         "required_count": len(required),
+        "required_root_entries": required_root,
+        "required_runtime_files": required_runtime,
         "excluded_patterns": excludes,
     }
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

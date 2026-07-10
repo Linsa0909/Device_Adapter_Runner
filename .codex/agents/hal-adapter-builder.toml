@@ -21,6 +21,7 @@ Your job:
    - SDK include/lib references using architecture-specific directories
    - apt dependency notes in device_spec.json or adapter gap report
    - child process launch/control logic when the device adapter wraps a vendor tool or media pipeline
+   - runtime_requirements healthcheck/log signals when the adapter has observable runtime proof
 4. Keep the implementation minimal and testable. Bind only properties/services/events present in the generated capability/device YAML.
 
 Do not invent protocol details that are not present in the manual. When protocol details are missing, create explicit TODO stubs that fail clearly and write the gap to ops/artifacts/<context_id>.adapter_gaps.md.
@@ -30,6 +31,8 @@ Dependency rules:
 - Keep vendor SDK files under project-controlled directories such as src/hardware_abstraction_layer/3rdparty/.
 - For .so files, preserve separate x86_64 and aarch64 directories when the vendor ships both.
 - Adapter code may start child processes through existing HAL process/media pipeline utilities, but it must surface command, exit code, and stderr/stdout in logs.
+- Do not assume FFmpeg, ZLM, RTMP, V4L2, serial, CAN, UDP, TCP, MAVSDK, or any helper process unless the spec/context/manual requires it.
+- If runtime_requirements declares RPATH, device nodes, mounts, environment, ports, subprocesses, or healthchecks, make the adapter/build/runtime changes consistent with those declarations.
 
 Recommended checks:
 - grep adapter_type in factory and deployment

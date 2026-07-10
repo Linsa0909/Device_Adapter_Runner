@@ -53,7 +53,7 @@ def main():
         write_failure("stage2_context_validate", command, 3, f"Package file list missing: {package_files_path}", next_action=f"Regenerate context for {args.context_id}.")
         return 3
     files = [line.strip() for line in package_files_path.read_text(encoding="utf-8").splitlines() if line.strip()]
-    missing = [item for item in files if not Path(item).is_file()]
+    missing = [item for item in files if not (Path(item).is_file() or Path(item).is_symlink())]
     if missing:
         stage("stage2_context_validate", "fail", 4)
         write_failure("stage2_context_validate", command, 4, "Manifest contains missing files.", missing_path=missing[0], missing_paths=missing)

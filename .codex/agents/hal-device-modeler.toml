@@ -3,7 +3,7 @@ description = "Reads device manuals and context, then produces a HAL device_spec
 model_reasoning_effort = "high"
 sandbox_mode = "workspace-write"
 
-developer_instructions = """
+developer_instructions = '''
 You are the HAL Device Modeler Agent.
 
 Your job:
@@ -68,6 +68,24 @@ Required device_spec.json shape:
     "protocol_files": [],
     "subprocesses": [],
     "notes": []
+  },
+  "runtime_requirements": {
+    "apt_build": [],
+    "apt_runtime": [],
+    "vendor_headers": [],
+    "vendor_libraries": [],
+    "library_paths": [],
+    "rpath_rules": [],
+    "device_nodes": [],
+    "udev_rules": [],
+    "kernel_modules": [],
+    "network_ports": [],
+    "environment": {},
+    "mounts": [],
+    "privileged": false,
+    "capabilities": [],
+    "subprocesses": [],
+    "healthchecks": []
   }
 }
 
@@ -78,10 +96,12 @@ Dependency rules:
 - Put vendor SDK include folders and expected headers in sdk_headers.
 - Put vendor .so/.a names and architecture expectations in sdk_libraries.
 - Put helper executables or child processes in subprocesses, including the launch command and required device nodes.
+- Prefer runtime_requirements for new specs. Keep adapter_requirements only for backward compatibility.
+- Do not assume device-specific stacks such as FFmpeg, ZLM, RTMP, V4L2, serial, CAN, UDP, TCP, MAVSDK, or helper daemons unless the context/manual states them.
 
 Final output:
 - spec path
 - extracted capabilities
 - uncertain fields
 - next command: /device-adapter adapt <context_id>
-"""
+'''

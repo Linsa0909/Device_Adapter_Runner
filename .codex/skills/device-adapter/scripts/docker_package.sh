@@ -113,7 +113,7 @@ case "$arch" in
   *) platform="$arch"; suffix="$(echo "$arch" | tr '/:' '__')" ;;
 esac
 
-python3 .codex/skills/device-adapter/scripts/verify_native_deps.py "$context_id" --arch "$suffix" || exit $?
+python3 .codex/skills/device-adapter/scripts/verify_native_deps.py "$context_id" --arch "$suffix" --strict || exit $?
 
 image="$(python3 - "$manifest" <<'PY'
 import json, sys

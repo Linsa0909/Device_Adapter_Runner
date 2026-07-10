@@ -1,0 +1,149 @@
+{
+  "stage0_env_check": {
+    "agent": "device-adapter-runtime",
+    "outputs": []
+  },
+  "stage1_context_intake": {
+    "agent": "context-mapper",
+    "outputs": [
+      "ops/contexts/<context_id>.context.md",
+      "ops/contexts/<context_id>.manifest.json"
+    ]
+  },
+  "stage2_docs_inventory": {
+    "agent": "docs-intake-agent",
+    "outputs": [
+      "ops/contexts/<context_id>.docs_inventory.json"
+    ]
+  },
+  "stage3_docs_coverage": {
+    "agent": "docs-intake-agent",
+    "outputs": [
+      "ops/contexts/<context_id>.docs_coverage.json"
+    ]
+  },
+  "stage4_capability_model": {
+    "agent": "capability-modeler-agent",
+    "outputs": [
+      "ops/contexts/<context_id>.device_spec.json"
+    ]
+  },
+  "stage5_deployment_plan": {
+    "agent": "deployment-planner-agent",
+    "outputs": [
+      "ops/contexts/<context_id>.device_spec.json"
+    ]
+  },
+  "stage6_dependency_audit": {
+    "agent": "sdk-dependency-auditor-agent",
+    "outputs": [
+      "ops/contexts/<context_id>.dependency_plan.json",
+      "ops/artifacts/<context_id>.dependency_validation.json"
+    ]
+  },
+  "stage7_spec_validate": {
+    "agent": "spec-validator-agent",
+    "outputs": [
+      "ops/artifacts/<context_id>.spec_validation.json"
+    ]
+  },
+  "stage8_yaml_generate": {
+    "agent": "yaml-writer-agent",
+    "outputs": [
+      "src/hardware_abstraction_layer/model/capability_groups/<capability>.capability.yaml",
+      "src/hardware_abstraction_layer/model/devices/<adapter>.device.yaml",
+      "src/hardware_abstraction_layer/config/deployment.yaml"
+    ]
+  },
+  "stage9_yaml_validate": {
+    "agent": "verify_hal_adapter.py",
+    "outputs": [
+      "ops/artifacts/<context_id>.yaml_validation.json"
+    ]
+  },
+  "stage10_adapter_codegen": {
+    "agent": "hal-adapter-builder",
+    "outputs": [
+      "src/hardware_abstraction_layer/include/hardware_abstraction_layer/adapter/<adapter>/",
+      "src/hardware_abstraction_layer/src/adapter/<adapter>/"
+    ]
+  },
+  "stage11_hal_registration_verify": {
+    "agent": "hal-registration-verifier-agent",
+    "outputs": [
+      "ops/artifacts/<context_id>.registration_report.json"
+    ]
+  },
+  "stage12_package_manifest": {
+    "agent": "package-builder",
+    "outputs": [
+      "ops/artifacts/<context_id>.package_files.txt"
+    ]
+  },
+  "stage13_package_verify": {
+    "agent": "package-builder",
+    "outputs": [
+      "ops/artifacts/<context_id>.package_verify.json"
+    ]
+  },
+  "stage14_docker_build_x86_optional": {
+    "agent": "docker-builder",
+    "outputs": [
+      "ops/artifacts/<context_id>_amd64_image.tar"
+    ]
+  },
+  "stage15_docker_build_arm64": {
+    "agent": "docker-builder",
+    "outputs": [
+      "ops/artifacts/<context_id>_arm64_image.tar"
+    ]
+  },
+  "stage16_image_verify": {
+    "agent": "docker-builder",
+    "outputs": [
+      "ops/artifacts/<context_id>_<arch>_image_inspect.json"
+    ]
+  },
+  "stage17_remote_transfer": {
+    "agent": "remote-deployer",
+    "outputs": [
+      "ops/artifacts/logs/"
+    ]
+  },
+  "stage18_remote_prepare": {
+    "agent": "remote-deployer",
+    "outputs": [
+      "ops/artifacts/logs/"
+    ]
+  },
+  "stage19_remote_device_probe": {
+    "agent": "remote-tester",
+    "outputs": [
+      "ops/artifacts/logs/"
+    ]
+  },
+  "stage20_remote_run": {
+    "agent": "remote-tester",
+    "outputs": [
+      "ops/artifacts/logs/"
+    ]
+  },
+  "stage21_remote_test": {
+    "agent": "remote-tester",
+    "outputs": [
+      "ops/artifacts/logs/"
+    ]
+  },
+  "stage22_collect_logs": {
+    "agent": "remote-tester",
+    "outputs": [
+      "ops/artifacts/logs/"
+    ]
+  },
+  "stage23_error_summary": {
+    "agent": "failure-debugger",
+    "outputs": [
+      "ops/artifacts/last_failure.json"
+    ]
+  }
+}
