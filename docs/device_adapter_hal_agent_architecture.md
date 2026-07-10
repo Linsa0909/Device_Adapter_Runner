@@ -62,7 +62,7 @@ stage19_remote_device_probe
 stage20_remote_run
 stage21_remote_test
 stage22_collect_logs
-stage23_error_summary
+stage23_failure_classification
 ```
 
 ## Agent Flow

@@ -2,6 +2,14 @@
 
 This document describes the current `device-adapter` agent workflow, stage ownership, logs, status files, and maintenance rules.
 
+## Architecture Principles
+
+- Agents do not own state; `stage_orchestrator.py` owns stage state.
+- Agents do not define facts; facts must come from documentation, repository evidence, or device probes.
+- Agents do not decide final success; deterministic validators and tests decide success.
+- Agents do not cross repair boundaries; fixes route back to the owner agent.
+- Agents produce decisions and local generation, not unrestricted project rewrites.
+
 ## Current Agent Flow
 
 ```text
@@ -21,6 +29,8 @@ context-mapper
   -> failure-debugger
 ```
 
+There are currently 15 configured roles. `hal-device-modeler` is a legacy/compatibility modeler and is not shown in the preferred fine-grained flow above.
+
 ## Agent Responsibilities
 
 | Agent | Main responsibility | Primary outputs | Failure owner |
@@ -39,6 +49,8 @@ context-mapper
 | `remote-deployer` | Transfer package/image to the board/server and prepare remote runtime directory. | Remote deployment state and logs. | SSH/scp/rsync failure, remote extraction/load failure. |
 | `remote-tester` | Run remote tests, collect terminal output, Docker logs, device state, and healthchecks. | remote test logs under `ops/artifacts/logs/`. | Device missing, permission issue, process exits, healthcheck fails. |
 | `failure-debugger` | Read failure JSON/logs/reports and route the fix back to the right agent/stage. | failure summary and rerun command. | Misclassified root cause or missing next action. |
+
+`failure-debugger` is intentionally limited. It should classify the failure and write `ops/artifacts/<context_id>.remediation_plan.json`; the actual repair belongs to the owner agent named by that plan.
 
 ## Stage Ownership
 
@@ -67,7 +79,49 @@ context-mapper
 | `stage20_remote_run` | `remote-tester` | Runtime process fails to start or exits. |
 | `stage21_remote_test` | `remote-tester` | Healthcheck/function proof fails. |
 | `stage22_collect_logs` | `remote-tester` | Log collection failure. |
-| `stage23_error_summary` | `failure-debugger` | No actionable failure summary. |
+| `stage23_failure_classification` | `failure-debugger` | No actionable failure classification or remediation plan. |
+
+## Boundary Control
+
+Stage write boundaries are declared in:
+
+```text
+.codex/skills/device-adapter/scripts/agent_boundary_policy.json
+```
+
+Each stage policy can declare:
+
+```json
+{
+  "agent": "yaml-writer-agent",
+  "write_allowlist": [
+    "src/hardware_abstraction_layer/model/**",
+    "src/hardware_abstraction_layer/config/deployment.yaml",
+    "ops/artifacts/**"
+  ],
+  "write_denylist": [
+    "Dockerfile",
+    "docker-compose.yml",
+    "ops/contexts/{context_id}.device_spec.json"
+  ],
+  "diff_budget": {
+    "max_modified_files": 8,
+    "max_changed_lines": 800
+  }
+}
+```
+
+For script-driven stages, `stage_orchestrator.py` checks the Git working-tree change set before and after the command. A successful stage that writes outside its boundary fails with:
+
+```text
+BOUNDARY_WRITE_VIOLATION
+```
+
+Boundary reports are written to:
+
+```text
+ops/artifacts/<context_id>.<stage_name>.boundary_check.json
+```
 
 ## Logs And Status
 
@@ -89,6 +143,14 @@ Quick global status:
 cat ops/artifacts/<context_id>.status.json
 ```
 
+Per-stage machine state:
+
+```bash
+cat ops/artifacts/stages/<context_id>/<stage_name>.json
+```
+
+The stage JSON is the source of truth for automation. Log markers are only human-readable evidence.
+
 Generated-file trail:
 
 ```bash
@@ -99,6 +161,12 @@ Last failure:
 
 ```bash
 cat ops/artifacts/last_failure.json
+```
+
+Remediation plan:
+
+```bash
+cat ops/artifacts/<context_id>.remediation_plan.json
 ```
 
 Important reports:
@@ -136,11 +204,60 @@ Use the failed stage first. If there is no stage marker, route by error pattern:
 ## Maintenance Rules
 
 - Keep `SKILL.md`, `README.md`, `AGENTS.md`, and this workflow document consistent when adding stages or agents.
-- Keep `agent_stage_map.json` aligned with `stage_orchestrator.py`.
+- Keep `agent_stage_map.json`, `agent_boundary_policy.json`, and `stage_orchestrator.py` aligned.
 - Every new deterministic check must write a JSON report under `ops/artifacts/`.
 - Every workflow failure must write `ops/artifacts/last_failure.json`.
+- Every workflow failure should also write `ops/artifacts/<context_id>.remediation_plan.json`.
+- Every stage should write `ops/artifacts/stages/<context_id>/<stage_name>.json`.
 - Do not add device-specific defaults to generic runtime generation. Device-specific dependencies must come from context/manual/spec.
 - Known-device checks are allowed only when context explicitly identifies that device.
+
+## Artifact Layering
+
+Do not overload `device_spec.json` with every fact and decision. Prefer three layers:
+
+```text
+ops/contexts/<context_id>.device_observation.json
+ops/contexts/<context_id>.device_spec.json
+ops/contexts/<context_id>.deployment_plan.json
+```
+
+Recommended ownership:
+
+| Artifact | Meaning | Owner |
+| --- | --- | --- |
+| `device_observation.json` | Probe facts from hardware/OS/docs evidence. | `remote-tester`, `docs-intake-agent` |
+| `device_spec.json` | Logical adaptation contract and expected capabilities. | `capability-modeler-agent`, `spec-validator-agent` |
+| `deployment_plan.json` | Concrete runtime mapping, mounts, container/network decision. | `deployment-planner-agent` |
+
+Legacy consolidated `device_spec.json` remains supported until the split artifacts are fully implemented.
+
+## Roadmap Priority
+
+P0:
+
+- Enforce read/write boundaries per stage.
+- Treat per-stage JSON as the state source.
+- Keep `failure-debugger` as classification/remediation planning only.
+- Split observation/spec/deployment artifacts.
+- Add input/output hashes to core artifacts.
+- Standardize failure codes, retry policy, and resume point.
+
+P1:
+
+- Add JSON Schema condition validation for context, manifest, spec, deployment plan, and stage result.
+- Move generated Dockerfile/YAML/CMake fragments toward template plus structured parameters.
+- Add diff budgets and idempotency checks for generated files.
+- Add golden fixtures for common device classes.
+- Upgrade remote tests from process checks to functional output evidence.
+- Build an evidence bundle and acceptance report.
+
+P2:
+
+- Convert the linear stage list into a dependency-aware DAG.
+- Use input/output hashes to skip non-stale stages.
+- Support precise resume/invalidate commands.
+- Add development, CI, and delivery test profiles.
 
 ## Recorded Future Agent Additions
 

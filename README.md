@@ -20,6 +20,7 @@ The workflow is designed for cases where the project starts without runtime pack
 - Remote deploy and test over SSH.
 - Stage markers and structured failure output for agent-driven repair loops.
 - A documented agent/stage ownership model with global status and per-run logs.
+- Stage boundary policy and per-stage JSON state files for auditability.
 
 ## Directory Layout
 
@@ -96,6 +97,14 @@ Recorded future additions, not implemented yet:
 dependency-fetch-agent
 vendor-materializer-agent
 acceptance-planner-agent
+```
+
+Current hardening controls:
+
+```text
+.codex/skills/device-adapter/scripts/agent_boundary_policy.json
+ops/artifacts/stages/<context_id>/<stage_name>.json
+ops/artifacts/<context_id>.remediation_plan.json
 ```
 
 ## Command Flow
@@ -233,12 +242,24 @@ tail -f ops/artifacts/logs/<context_id>_stage_runner.log
 cat ops/artifacts/<context_id>.status.json
 ```
 
+Per-stage JSON state is the automation source of truth:
+
+```bash
+cat ops/artifacts/stages/<context_id>/<stage_name>.json
+```
+
 `generated_files.txt` records which stage produced each handoff artifact or generated file.
 
 For a full stage-to-agent map and common error routing table, see:
 
 ```text
 docs/device_adapter_agent_workflow.md
+```
+
+If a stage writes outside its declared allowlist, the orchestrator fails it with:
+
+```text
+BOUNDARY_WRITE_VIOLATION
 ```
 
 ## Closed-Loop Delivery Packages
@@ -305,7 +326,7 @@ stage19_remote_device_probe
 stage20_remote_run
 stage21_remote_test
 stage22_collect_logs
-stage23_error_summary
+stage23_failure_classification
 ```
 
 ## Notes

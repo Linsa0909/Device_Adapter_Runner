@@ -346,6 +346,65 @@ tail -f ops/artifacts/logs/<context_id>_stage_runner.log
 
 `last_failure.json` should include `log_file` when available.
 
+Stage markers are for humans and logs. They are not the only source of truth. Every staged run must also write machine-readable stage results under:
+
+```text
+ops/artifacts/stages/<context_id>/<stage_name>.json
+```
+
+Each stage result should include:
+- `stage`
+- `owner_agent`
+- `status`
+- `started_at`
+- `finished_at`
+- `duration_ms`
+- `exit_code`
+- `outputs`
+- `output_hashes`
+- `evidence`
+- `next_action` when failed
+
+The global status file is:
+
+```text
+ops/artifacts/<context_id>.status.json
+```
+
+## Boundary Policy
+
+Agent ownership must be enforced by deterministic policy, not only by prompts. Stage write boundaries are declared in:
+
+```text
+.codex/skills/device-adapter/scripts/agent_boundary_policy.json
+```
+
+For script-driven stages, `stage_orchestrator.py` compares the Git working-tree change set before and after the stage. If a stage writes outside its allowlist or touches a denylisted path, the stage must fail with:
+
+```text
+BOUNDARY_WRITE_VIOLATION
+```
+
+Failure reports should include the boundary report path and the files that violated the policy.
+
+`failure-debugger` must not directly perform broad repairs. It should classify the failure and write:
+
+```text
+ops/artifacts/<context_id>.remediation_plan.json
+```
+
+The remediation plan must route the actual repair to the owner agent for the failed stage.
+
+## Context Artifact Layers
+
+Avoid turning `device_spec.json` into a catch-all object. The workflow should distinguish:
+
+- Observation facts: `ops/contexts/<context_id>.device_observation.json`
+- Adaptation contract: `ops/contexts/<context_id>.device_spec.json`
+- Deployment decision: `ops/contexts/<context_id>.deployment_plan.json`
+
+Current scripts still support legacy consolidated `device_spec.json`, but new agents should prefer the split artifacts when data is available.
+
 Required stages:
 - stage0_env_check
 - stage1_context_intake
@@ -370,7 +429,7 @@ Required stages:
 - stage20_remote_run
 - stage21_remote_test
 - stage22_collect_logs
-- stage23_error_summary
+- stage23_failure_classification
 
 ## Script Map
 
