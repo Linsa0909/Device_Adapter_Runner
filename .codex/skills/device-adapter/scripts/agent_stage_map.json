@@ -140,10 +140,11 @@
       "ops/artifacts/logs/"
     ]
   },
-  "stage23_error_summary": {
+  "stage23_failure_classification": {
     "agent": "failure-debugger",
     "outputs": [
-      "ops/artifacts/last_failure.json"
+      "ops/artifacts/last_failure.json",
+      "ops/artifacts/<context_id>.remediation_plan.json"
     ]
   }
 }

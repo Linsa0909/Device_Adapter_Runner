@@ -1,0 +1,176 @@
+{
+  "schema_version": "1.0",
+  "default": {
+    "read_allowlist": ["**"],
+    "write_allowlist": ["ops/artifacts/**", "ops/contexts/**"],
+    "write_denylist": [".git/**"],
+    "diff_budget": {
+      "max_modified_files": 50,
+      "max_changed_lines": 5000
+    }
+  },
+  "stages": {
+    "stage1_context_intake": {
+      "agent": "context-mapper",
+      "write_allowlist": [
+        "ops/contexts/{context_id}.context.md",
+        "ops/contexts/{context_id}.manifest.json",
+        "ops/artifacts/{context_id}.package_files.txt",
+        "ops/artifacts/**"
+      ],
+      "write_denylist": ["src/**", "Dockerfile", "docker-compose.yml", "CMakeLists.txt"]
+    },
+    "stage4_capability_model": {
+      "agent": "capability-modeler-agent",
+      "write_allowlist": [
+        "ops/contexts/{context_id}.device_spec.json",
+        "ops/artifacts/**"
+      ],
+      "write_denylist": ["src/**", "Dockerfile", "docker-compose.yml", "CMakeLists.txt"]
+    },
+    "stage5_deployment_plan": {
+      "agent": "deployment-planner-agent",
+      "write_allowlist": [
+        "ops/contexts/{context_id}.deployment_plan.json",
+        "ops/contexts/{context_id}.device_spec.json",
+        "ops/artifacts/**"
+      ],
+      "write_denylist": ["src/**", "Dockerfile", "docker-compose.yml", "CMakeLists.txt"]
+    },
+    "stage6_dependency_audit": {
+      "agent": "sdk-dependency-auditor-agent",
+      "write_allowlist": [
+        "ops/contexts/{context_id}.dependency_plan.json",
+        "ops/contexts/{context_id}.device_spec.json",
+        "ops/artifacts/**"
+      ],
+      "write_denylist": ["src/**", "Dockerfile", "docker-compose.yml", "CMakeLists.txt"]
+    },
+    "stage7_spec_validate": {
+      "agent": "spec-validator-agent",
+      "write_allowlist": ["ops/artifacts/**"],
+      "write_denylist": ["src/**", "Dockerfile", "docker-compose.yml", "CMakeLists.txt", "ops/contexts/**"]
+    },
+    "stage8_yaml_generate": {
+      "agent": "yaml-writer-agent",
+      "write_allowlist": [
+        "src/hardware_abstraction_layer/model/**",
+        "src/hardware_abstraction_layer/config/deployment.yaml",
+        "ops/artifacts/**"
+      ],
+      "write_denylist": [
+        "Dockerfile",
+        "docker-compose.yml",
+        "CMakeLists.txt",
+        "src/**/CMakeLists.txt",
+        "ops/contexts/{context_id}.device_spec.json"
+      ],
+      "diff_budget": {
+        "max_modified_files": 8,
+        "max_changed_lines": 800
+      }
+    },
+    "stage10_adapter_codegen": {
+      "agent": "hal-adapter-builder",
+      "write_allowlist": [
+        "src/hardware_abstraction_layer/include/hardware_abstraction_layer/adapter/**",
+        "src/hardware_abstraction_layer/src/adapter/**",
+        "src/hardware_abstraction_layer/3rdparty/**",
+        "src/hardware_abstraction_layer/CMakeLists.txt",
+        "src/hardware_abstraction_layer/include/hardware_abstraction_layer/adapter/adapter_factory.hpp",
+        "ops/artifacts/**"
+      ],
+      "write_denylist": [
+        "Dockerfile",
+        "docker-compose.yml",
+        "ops/contexts/{context_id}.device_spec.json"
+      ],
+      "diff_budget": {
+        "max_modified_files": 20,
+        "max_changed_lines": 2000
+      }
+    },
+    "stage11_hal_registration_verify": {
+      "agent": "hal-registration-verifier-agent",
+      "write_allowlist": ["ops/artifacts/**"],
+      "write_denylist": ["src/**", "Dockerfile", "docker-compose.yml", "ops/contexts/**"]
+    },
+    "stage12_package_manifest": {
+      "agent": "package-builder",
+      "write_allowlist": [
+        "Dockerfile",
+        "docker-compose.yml",
+        ".dockerignore",
+        "run.sh",
+        "config.env",
+        "install.sh",
+        "status.sh",
+        "view.sh",
+        "DEPLOY.md",
+        "ops/scripts/**",
+        "ops/contexts/{context_id}.manifest.json",
+        "ops/artifacts/**"
+      ],
+      "write_denylist": ["src/hardware_abstraction_layer/src/adapter/**"]
+    },
+    "stage13_package_verify": {
+      "agent": "package-builder",
+      "write_allowlist": ["ops/artifacts/**"],
+      "write_denylist": ["src/**", "Dockerfile", "docker-compose.yml", "ops/contexts/**"]
+    },
+    "stage14_docker_build_x86_optional": {
+      "agent": "docker-builder",
+      "write_allowlist": ["ops/artifacts/**"],
+      "write_denylist": ["src/**", "ops/contexts/**"]
+    },
+    "stage15_docker_build_arm64": {
+      "agent": "docker-builder",
+      "write_allowlist": ["ops/artifacts/**"],
+      "write_denylist": ["src/**", "ops/contexts/**"]
+    },
+    "stage16_image_verify": {
+      "agent": "docker-builder",
+      "write_allowlist": ["ops/artifacts/**"],
+      "write_denylist": ["src/**", "ops/contexts/**"]
+    },
+    "stage17_remote_transfer": {
+      "agent": "remote-deployer",
+      "write_allowlist": ["ops/artifacts/**"],
+      "write_denylist": ["src/**", "ops/contexts/**", "Dockerfile", "docker-compose.yml"]
+    },
+    "stage18_remote_prepare": {
+      "agent": "remote-deployer",
+      "write_allowlist": ["ops/artifacts/**"],
+      "write_denylist": ["src/**", "ops/contexts/**", "Dockerfile", "docker-compose.yml"]
+    },
+    "stage19_remote_device_probe": {
+      "agent": "remote-tester",
+      "write_allowlist": ["ops/artifacts/**"],
+      "write_denylist": ["src/**", "ops/contexts/**"]
+    },
+    "stage20_remote_run": {
+      "agent": "remote-tester",
+      "write_allowlist": ["ops/artifacts/**"],
+      "write_denylist": ["src/**", "ops/contexts/**"]
+    },
+    "stage21_remote_test": {
+      "agent": "remote-tester",
+      "write_allowlist": ["ops/artifacts/**"],
+      "write_denylist": ["src/**", "ops/contexts/**"]
+    },
+    "stage22_collect_logs": {
+      "agent": "remote-tester",
+      "write_allowlist": ["ops/artifacts/**"],
+      "write_denylist": ["src/**", "ops/contexts/**"]
+    },
+    "stage23_failure_classification": {
+      "agent": "failure-debugger",
+      "write_allowlist": [
+        "ops/artifacts/last_failure.json",
+        "ops/artifacts/*remediation_plan.json",
+        "ops/artifacts/**"
+      ],
+      "write_denylist": ["src/**", "Dockerfile", "docker-compose.yml", "ops/contexts/**"]
+    }
+  }
+}

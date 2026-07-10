@@ -11,6 +11,8 @@ scripts and preserve their stage markers.
 from __future__ import annotations
 
 import argparse
+import fnmatch
+import hashlib
 import json
 import os
 import subprocess
@@ -27,6 +29,8 @@ ARTIFACTS = Path("ops/artifacts")
 LOGS = ARTIFACTS / "logs"
 CURRENT_CONTEXT_ID = ""
 CURRENT_LOG_FILE: Path | None = None
+STAGE_START_TIMES: dict[str, datetime] = {}
+STAGE_OUTPUTS: dict[str, list[str]] = {}
 
 
 @dataclass(frozen=True)
@@ -104,7 +108,7 @@ STAGES: dict[str, Stage] = {
     "stage20_remote_run": Stage("stage20_remote_run", "remote_test.sh"),
     "stage21_remote_test": Stage("stage21_remote_test", "remote_test.sh"),
     "stage22_collect_logs": Stage("stage22_collect_logs", "remote_test.sh"),
-    "stage23_error_summary": Stage("stage23_error_summary", "failure-debugger"),
+    "stage23_failure_classification": Stage("stage23_failure_classification", "failure-debugger"),
 }
 
 
@@ -144,18 +148,27 @@ RERUN_STARTS = {
     "stage20_remote_run": "test",
     "stage21_remote_test": "test",
     "stage22_collect_logs": "test",
-    "stage23_error_summary": "test",
+    "stage23_failure_classification": "test",
 }
 
 
 def marker(stage: str, status: str, exit_code: int | None = None) -> None:
     suffix = "" if exit_code is None else f" exit_code={exit_code}"
     log_line(f"[AGENT_STAGE] stage={stage} status={status}{suffix}")
+    update_stage_result(stage, status, exit_code)
     update_status(stage, status, exit_code)
 
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
 
 
 def log_file_for(context_id: str) -> Path:
@@ -202,6 +215,56 @@ def generated_files_path(context_id: str) -> Path:
     return ARTIFACTS / f"{context_id}.generated_files.txt"
 
 
+def stage_result_path(context_id: str, stage_name: str) -> Path:
+    return ARTIFACTS / "stages" / context_id / f"{stage_name}.json"
+
+
+def stage_outputs(stage_name: str) -> list[str]:
+    return STAGE_OUTPUTS.get(stage_name, [])
+
+
+def hash_outputs(outputs: list[str]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for item in outputs:
+        path = Path(item)
+        if path.is_file():
+            result[item] = sha256_file(path)
+    return result
+
+
+def update_stage_result(stage_name: str, status: str, exit_code: int | None = None, *, evidence: list[str] | None = None) -> None:
+    if not CURRENT_CONTEXT_ID:
+        return
+    now = datetime.now(timezone.utc)
+    if status == "start":
+        STAGE_START_TIMES[stage_name] = now
+    started = STAGE_START_TIMES.get(stage_name, now)
+    outputs = stage_outputs(stage_name)
+    stage = STAGES.get(stage_name, Stage(stage_name, "stage_orchestrator.py"))
+    payload = {
+        "schema_version": "1.0",
+        "context_id": CURRENT_CONTEXT_ID,
+        "stage": stage_name,
+        "owner_agent": stage.owner,
+        "status": "running" if status == "start" else status,
+        "started_at": started.isoformat(timespec="seconds"),
+        "updated_at": now.isoformat(timespec="seconds"),
+        "finished_at": None if status == "start" else now.isoformat(timespec="seconds"),
+        "duration_ms": None if status == "start" else int((now - started).total_seconds() * 1000),
+        "exit_code": exit_code,
+        "outputs": outputs,
+        "output_hashes": hash_outputs(outputs),
+        "evidence": evidence or [str(log_file_for(CURRENT_CONTEXT_ID))],
+        "log_file": str(log_file_for(CURRENT_CONTEXT_ID)),
+    }
+    if status == "fail":
+        payload["next_action"] = {
+            "owner_agent": "failure-debugger",
+            "resume_from": stage_name,
+        }
+    json_write(stage_result_path(CURRENT_CONTEXT_ID, stage_name), payload)
+
+
 def update_status(stage_name: str, status: str, exit_code: int | None = None) -> None:
     if not CURRENT_CONTEXT_ID:
         return
@@ -221,6 +284,7 @@ def update_status(stage_name: str, status: str, exit_code: int | None = None) ->
     json_write(
         path,
         {
+            "schema_version": "1.0",
             "context_id": CURRENT_CONTEXT_ID,
             "current_stage": stage_name,
             "status": status,
@@ -235,30 +299,80 @@ def update_status(stage_name: str, status: str, exit_code: int | None = None) ->
 
 def fail(context_id: str, stage_name: str, reason: str, evidence: list[str], next_action: str, exit_code: int = 2) -> int:
     stage = STAGES.get(stage_name, Stage(stage_name, "stage_orchestrator.py"))
+    failure_id = f"f-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{stage_name}"
+    error_code = "STAGE_FAILED"
+    if "BOUNDARY_WRITE_VIOLATION" in reason:
+        error_code = "BOUNDARY_WRITE_VIOLATION"
+    elif "missing" in reason.lower():
+        error_code = "REQUIRED_ARTIFACT_MISSING"
     json_write(
         ARTIFACTS / "last_failure.json",
         {
+            "schema_version": "1.0",
+            "failure_id": failure_id,
             "context_id": context_id,
             "stage": stage_name,
-            "agent": stage.owner,
+            "owner_agent": stage.owner,
             "status": "fail",
             "exit_code": exit_code,
-            "reason": reason,
+            "error_code": error_code,
+            "category": "workflow",
+            "summary": reason,
             "evidence": evidence,
             "log_file": str(log_file_for(context_id)),
+            "recommended_owner": stage.owner,
+            "allowed_repair_scope": boundary_allowed_paths(stage_name, context_id),
             "next_action": next_action.format(context_id=context_id),
             "rerun_command": f"/device-adapter rerun {context_id}",
+            "retry_policy": {"attempt": 1, "max_attempts": 3},
         },
     )
+    write_remediation_plan(context_id, failure_id, stage_name, stage.owner, reason, evidence, next_action)
     marker(stage_name, "fail", exit_code)
     return exit_code
 
 
+def write_remediation_plan(
+    context_id: str,
+    failure_id: str,
+    stage_name: str,
+    owner_agent: str,
+    reason: str,
+    evidence: list[str],
+    next_action: str,
+) -> None:
+    json_write(
+        ARTIFACTS / f"{context_id}.remediation_plan.json",
+        {
+            "schema_version": "1.0",
+            "failure_id": failure_id,
+            "context_id": context_id,
+            "failed_stage": stage_name,
+            "error_class": "BOUNDARY_WRITE_VIOLATION" if "BOUNDARY_WRITE_VIOLATION" in reason else "STAGE_FAILURE",
+            "probable_root_cause": reason,
+            "owner_agent": owner_agent,
+            "allowed_files": boundary_allowed_paths(stage_name, context_id),
+            "proposed_changes": [],
+            "required_revalidation_stages": [stage_name],
+            "evidence": evidence,
+            "next_action": next_action.format(context_id=context_id),
+        },
+    )
+
+
 def checkpoint(context_id: str, stage_name: str, outputs: list[str] | None = None) -> None:
     generated = outputs or []
+    STAGE_OUTPUTS[stage_name] = generated
     json_write(
         ARTIFACTS / f"{context_id}.stage_checkpoint.json",
-        {"context_id": context_id, "stage": stage_name, "status": "success", "outputs": generated},
+        {
+            "schema_version": "1.0",
+            "context_id": context_id,
+            "stage": stage_name,
+            "status": "success",
+            "outputs": generated,
+            "output_hashes": hash_outputs(generated),
+        },
     )
     if generated:
         with generated_files_path(context_id).open("a", encoding="utf-8") as fh:
@@ -288,9 +402,125 @@ def ensure_outputs(context_id: str, stage_name: str) -> bool:
     return True
 
 
+def git_changed_files() -> set[str] | None:
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "-uall"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    files: set[str] = set()
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        path = line[3:].strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1].strip()
+        if path:
+            files.add(path)
+    return files
+
+
+def load_boundary_policy() -> dict[str, Any]:
+    path = SCRIPT_DIR / "agent_boundary_policy.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def format_policy_patterns(patterns: list[str], context_id: str) -> list[str]:
+    return [item.format(context_id=context_id) for item in patterns]
+
+
+def boundary_policy_for(stage_name: str, context_id: str) -> dict[str, Any]:
+    policy = load_boundary_policy()
+    default = dict(policy.get("default") or {})
+    stage_policy = dict((policy.get("stages") or {}).get(stage_name) or {})
+    merged = {**default, **stage_policy}
+    for key in ("write_allowlist", "write_denylist"):
+        merged[key] = format_policy_patterns(list(merged.get(key) or []), context_id)
+    return merged
+
+
+def boundary_allowed_paths(stage_name: str, context_id: str) -> list[str]:
+    return list(boundary_policy_for(stage_name, context_id).get("write_allowlist") or [])
+
+
+def path_matches(path: str, patterns: list[str]) -> bool:
+    return any(fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(Path(path).name, pattern) for pattern in patterns)
+
+
+def changed_line_count(paths: set[str]) -> int | None:
+    if not paths:
+        return 0
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--numstat", "--", *sorted(paths)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    total = 0
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        for value in parts[:2]:
+            if value.isdigit():
+                total += int(value)
+    return total
+
+
+def enforce_boundary(context_id: str, stage_name: str, changed_files: set[str]) -> tuple[bool, dict[str, Any]]:
+    policy = boundary_policy_for(stage_name, context_id)
+    allow = list(policy.get("write_allowlist") or [])
+    deny = list(policy.get("write_denylist") or [])
+    budget = dict(policy.get("diff_budget") or {})
+    violations = []
+    for path in sorted(changed_files):
+        if deny and path_matches(path, deny):
+            violations.append({"path": path, "reason": "write_denylist"})
+        elif allow and not path_matches(path, allow):
+            violations.append({"path": path, "reason": "write_allowlist"})
+    max_files = budget.get("max_modified_files")
+    if isinstance(max_files, int) and len(changed_files) > max_files:
+        violations.append({"path": "*", "reason": f"diff_budget.max_modified_files>{max_files}"})
+    lines_changed = changed_line_count(changed_files)
+    max_lines = budget.get("max_changed_lines")
+    if isinstance(max_lines, int) and lines_changed is not None and lines_changed > max_lines:
+        violations.append({"path": "*", "reason": f"diff_budget.max_changed_lines>{max_lines}"})
+    report = {
+        "schema_version": "1.0",
+        "context_id": context_id,
+        "stage": stage_name,
+        "policy": policy,
+        "changed_files": sorted(changed_files),
+        "changed_lines": lines_changed,
+        "violations": violations,
+        "ok": not violations,
+    }
+    json_write(ARTIFACTS / f"{context_id}.{stage_name}.boundary_check.json", report)
+    return not violations, report
+
+
 def run_command(context_id: str, stage_name: str, command: list[str], *, preserve_child_failure: bool = False) -> int:
     marker(stage_name, "start")
     log_line("[AGENT_COMMAND] " + " ".join(command))
+    before_changes = git_changed_files()
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     assert process.stdout is not None
     for line in process.stdout:
@@ -309,6 +539,22 @@ def run_command(context_id: str, stage_name: str, command: list[str], *, preserv
             f"Inspect ops/artifacts/last_failure.json and rerun /device-adapter rerun {context_id}",
             returncode,
         )
+    after_changes = git_changed_files()
+    if before_changes is not None and after_changes is not None:
+        stage_changes = after_changes - before_changes
+        ok, report = enforce_boundary(context_id, stage_name, stage_changes)
+        if not ok:
+            return fail(
+                context_id,
+                stage_name,
+                "BOUNDARY_WRITE_VIOLATION",
+                [
+                    f"changed: {item}" for item in report.get("changed_files", [])
+                ]
+                + [f"violation: {item['path']} {item['reason']}" for item in report.get("violations", [])],
+                "Inspect boundary report and route the fix to the stage owner.",
+                11,
+            )
     marker(stage_name, "success")
     checkpoint(context_id, stage_name)
     return 0
