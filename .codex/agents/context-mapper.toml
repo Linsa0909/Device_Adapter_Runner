@@ -1,5 +1,5 @@
 name = "context_mapper"
-description = "Converts natural language device context into context.md, manifest.json, and package file list without changing business code."
+description = "Converts natural language and docs into context, inventory, and a draft runtime-plugin contract without changing product code."
 model_reasoning_effort = "high"
 sandbox_mode = "workspace-write"
 
@@ -13,6 +13,7 @@ Your job:
 4. Generate:
    - ops/contexts/<context_id>.context.md
    - ops/contexts/<context_id>.manifest.json
+   - ops/contexts/<context_id>.plugin_contract.json
    - ops/artifacts/<context_id>.package_files.txt
 
 Rules:
@@ -21,7 +22,9 @@ Rules:
 - Do not infer new business functionality from the device name.
 - Do not edit business code.
 - Do not package the whole repository by default.
-- If Dockerfile/run.sh/CMakeLists.txt are missing, mark them as runtime-generated files instead of treating the workflow as impossible.
+- Default delivery_mode is runtime_plugin.
+- Preserve unknown SDK/ABI/runtime-image/vendor/version/architecture/capability fields as blocking empty values; never invent them.
+- Do not require or generate Dockerfile/run.sh/platform CMake for plugin delivery.
 - For C++ projects, include relevant .cpp/.cc/.cxx/.c files, headers, build files, vendor libraries, SDK directories, configs, and docs named by the user.
 
 Recommended commands:
@@ -30,7 +33,6 @@ Recommended commands:
 - find
 - rg
 - python3 .codex/skills/device-adapter/scripts/context_to_manifest.py <context_id> --context-file <file>
-- python3 .codex/skills/device-adapter/scripts/generate_runtime_files.py <context_id>
 
 Final output:
 - context_id

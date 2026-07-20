@@ -15,6 +15,7 @@ This document describes the current `device-adapter` agent workflow, stage owner
 ```text
 context-mapper
   -> docs-intake-agent
+  -> acceptance-planner-agent
   -> capability-modeler-agent
   -> deployment-planner-agent
   -> sdk-dependency-auditor-agent
@@ -29,7 +30,7 @@ context-mapper
   -> failure-debugger
 ```
 
-There are currently 15 configured roles. `hal-device-modeler` is a legacy/compatibility modeler and is not shown in the preferred fine-grained flow above.
+There are currently 16 configured roles. `hal-device-modeler` is a legacy/compatibility modeler and is not shown in the preferred fine-grained flow above.
 
 ## Agent Responsibilities
 
@@ -37,13 +38,16 @@ There are currently 15 configured roles. `hal-device-modeler` is a legacy/compat
 | --- | --- | --- | --- |
 | `context-mapper` | Preserve natural language context and generate the initial manifest/package file list. | `ops/contexts/<id>.context.md`, `ops/contexts/<id>.manifest.json`, `ops/artifacts/<id>.package_files.txt` | Missing context, wrong project root, bad package boundary. |
 | `docs-intake-agent` | Read manuals, SDK notes, protocol docs, examples, and report coverage. | `ops/contexts/<id>.docs_inventory.json`, `ops/contexts/<id>.docs_coverage.json` | Missing docs, unreadable PDF, incomplete manual coverage. |
+| `acceptance-planner-agent` | Convert context/spec facts into an explicit device function chain and dependency checklist before generation continues. | `functional_chain.json`, `dependency_checklist.json`, `dependency_gaps.md` | Missing receiver service, missing runtime material, missing endpoint healthcheck, unclear device function chain. |
 | `capability-modeler-agent` | Convert documented functions into HAL properties, services, and events. | `ops/contexts/<id>.device_spec.json` | Wrong capability shape, undocumented controls, missing properties/services/events. |
 | `deployment-planner-agent` | Plan manager/device-node launch mode, device discovery, mounts, env, ports, and healthchecks. | Updated `device_spec.json` deployment and runtime sections. | Wrong launch mode, missing device-node rules, missing healthcheck. |
 | `sdk-dependency-auditor-agent` | Audit apt packages, SDK headers/libs, native helper executables, library paths, RPATH, device nodes, and subprocess healthchecks. | `runtime_requirements`, dependency reports, gap notes. | Missing SDK/header/lib, missing apt package, incomplete native dependency closure. |
 | `spec-validator-agent` | Validate the generated `device_spec.json` contract. | `ops/artifacts/<id>.spec_validation.json` | Missing required spec fields or inconsistent adapter/deployment data. |
 | `yaml-writer-agent` | Generate or update HAL capability/device/deployment YAML from the spec. | HAL model/config YAML. | YAML missing, malformed, or inconsistent with spec. |
-| `hal-adapter-builder` | Implement adapter C++/headers/protocol glue and subprocess launch code when `--allow-code` is present. | Adapter source/header files, protocol files, gap report. | Compile-level adapter issues, wrong include paths, undocumented protocol assumptions. |
+| `hal-adapter-builder` | Implement the selected transport end to end plus adapter C++/headers/protocol glue and subprocess lifecycle when `--allow-code` is present. | Discovery and real I/O backend, parser, HAL mapping, tests, adapter source/header files, gap report. | Missing transport backend, compile issues, wrong include paths, undocumented protocol assumptions. |
 | `hal-registration-verifier-agent` | Verify CMake, factory, deployment, install paths, and adapter file layout. | `registration_report.json`, `cmake_install_validation.json`, `source_path_validation.json` | Missing registration, bad CMake install source path, bad factory entry. |
+| `verification-agent` | Independently execute build, tests, static checks, C/C++ review, and differential review without modifying product files. | TDD/verification/C-review/differential-review JSON reports and logs. | Missing command evidence, failed test, unresolved finding, or hardware claim without execution. |
+| `human` | Review evidence and explicitly approve the current tested source fingerprint. | `human_approval.json`. | Missing or stale approval blocks package/build/deploy. |
 | `package-builder` | Package only manifest-selected files and verify tar contents. | `<id>_package.tar.gz`, package tree, package verify report. | Missing packaged file, excluded file included, missing release entry, lost `.so` symlink. |
 | `docker-builder` | Build/save x86 or arm64 Docker image and run native dependency verification. | image tar, image inspect JSON, native deps report, build log. | Docker build error, wrong image arch, unresolved helper `.so`. |
 | `remote-deployer` | Transfer package/image to the board/server and prepare remote runtime directory. | Remote deployment state and logs. | SSH/scp/rsync failure, remote extraction/load failure. |
@@ -60,6 +64,7 @@ There are currently 15 configured roles. `hal-device-modeler` is a legacy/compat
 | `stage1_context_intake` | `context-mapper` | Missing `context.md` or `manifest.json`. |
 | `stage2_docs_inventory` | `docs-intake-agent` | Missing/unreadable docs. |
 | `stage3_docs_coverage` | `docs-intake-agent` | Manual lacks protocol/SDK/deployment facts. |
+| `stage4_functional_chain_check` | `acceptance-planner-agent` / `functional_chain_check.py` | Functional chain unclear, local endpoint has no receiver, runtime material or healthcheck missing. |
 | `stage4_capability_model` | `capability-modeler-agent` | Missing `device_spec.json`. |
 | `stage5_deployment_plan` | `deployment-planner-agent` | Missing deployment entry, mounts, ports, device rules. |
 | `stage6_dependency_audit` | `sdk-dependency-auditor-agent` | Missing SDK, `.so`, apt package, native closure, RPATH. |
@@ -67,7 +72,12 @@ There are currently 15 configured roles. `hal-device-modeler` is a legacy/compat
 | `stage8_yaml_generate` | `yaml-writer-agent` / `adapt_hal_device.py` | YAML generation failed. |
 | `stage9_yaml_validate` | `verify_hal_adapter.py` | Missing HAL YAML. |
 | `stage10_adapter_codegen` | `hal-adapter-builder` | Bad adapter code/include/protocol implementation. |
+| `stage10a_tdd_evidence` | `hal-adapter-builder` | Missing real RED/GREEN/regression evidence. |
 | `stage11_hal_registration_verify` | `hal-registration-verifier-agent` | CMake/factory/deployment/install issue. |
+| `stage11a_independent_verification` | `verification-agent` | Build/test/static verification failed or evidence is missing. |
+| `stage11b_cpp_review` | `verification-agent` | C/C++ review has unresolved findings. |
+| `stage11c_differential_review` | `verification-agent` | Diff review finds regression or incomplete coverage. |
+| `stage11d_human_approval` | `human` | Approval missing or stale for the current source fingerprint. |
 | `stage12_package_manifest` | `package-builder` | Manifest generation/runtime file generation failed. |
 | `stage13_package_verify` | `package-builder` | Package content incomplete. |
 | `stage14_docker_build_x86_optional` | `docker-builder` | x86 build failure. |
@@ -179,6 +189,8 @@ ops/artifacts/<context_id>.registration_report.json
 ops/artifacts/<context_id>.source_path_validation.json
 ops/artifacts/<context_id>.cmake_install_validation.json
 ops/artifacts/<context_id>.release_script_validation.json
+ops/artifacts/<context_id>.functional_chain_check.json
+ops/artifacts/<context_id>.dependency_gaps.md
 ops/artifacts/<context_id>_<arch>_native_deps.json
 ops/artifacts/<context_id>.package_verify.json
 ```
@@ -191,6 +203,7 @@ Use the failed stage first. If there is no stage marker, route by error pattern:
 | --- | --- | --- |
 | PDF/manual missing or unreadable | `stage2_docs_inventory` | `docs-intake-agent` |
 | Missing protocol fields or unclear capability | `stage3_docs_coverage` / `stage4_capability_model` | `docs-intake-agent`, `capability-modeler-agent` |
+| Local RTMP/RTSP/UDP/TCP endpoint has no receiver/service, image/config, or healthcheck | `stage4_functional_chain_check` | `acceptance-planner-agent`, `deployment-planner-agent`, `sdk-dependency-auditor-agent` |
 | Missing SDK/header/lib/apt package | `stage6_dependency_audit` | `sdk-dependency-auditor-agent` |
 | `libxxx.so => not found` or unresolved `NEEDED` | `stage6_native_deps_verify` / `stage15_docker_build_arm64` | `sdk-dependency-auditor-agent`, `docker-builder` |
 | Bad C++ include or adapter compile issue | `stage10_adapter_codegen` | `hal-adapter-builder` |
@@ -218,6 +231,8 @@ Do not overload `device_spec.json` with every fact and decision. Prefer three la
 
 ```text
 ops/contexts/<context_id>.device_observation.json
+ops/contexts/<context_id>.functional_chain.json
+ops/contexts/<context_id>.dependency_checklist.json
 ops/contexts/<context_id>.device_spec.json
 ops/contexts/<context_id>.deployment_plan.json
 ```
@@ -227,6 +242,8 @@ Recommended ownership:
 | Artifact | Meaning | Owner |
 | --- | --- | --- |
 | `device_observation.json` | Probe facts from hardware/OS/docs evidence. | `remote-tester`, `docs-intake-agent` |
+| `functional_chain.json` | Required acquire/process/output chain derived from context/spec. | `acceptance-planner-agent` |
+| `dependency_checklist.json` | Runtime material and proof checklist for each chain stage. | `acceptance-planner-agent`, `sdk-dependency-auditor-agent` |
 | `device_spec.json` | Logical adaptation contract and expected capabilities. | `capability-modeler-agent`, `spec-validator-agent` |
 | `deployment_plan.json` | Concrete runtime mapping, mounts, container/network decision. | `deployment-planner-agent` |
 
@@ -261,7 +278,7 @@ P2:
 
 ## Recorded Future Agent Additions
 
-These are recorded design items and are not implemented yet:
+These are recorded design items. `acceptance-planner-agent` has an initial deterministic gate; the other two remain design items:
 
 ```text
 dependency-fetch-agent
@@ -273,4 +290,4 @@ Intended responsibilities:
 
 - `dependency-fetch-agent`: fetch/download declared public SDK archives, apt metadata, model files, or other external materials when the workflow is allowed to access the network.
 - `vendor-materializer-agent`: unpack/copy SDK headers, `.so`, `.a`, helper binaries, configs, and checksums into repo-local `vendor/` or HAL `3rdparty/` layout, then update manifest includes.
-- `acceptance-planner-agent`: convert the user's success criteria into deterministic `runtime_requirements.healthchecks`, including process, device, endpoint, and data-proof checks.
+- `acceptance-planner-agent`: convert the user's success criteria into deterministic `functional_chain.json`, `dependency_checklist.json`, and `runtime_requirements.healthchecks`, including process, device, endpoint, and data-proof checks.

@@ -1,5 +1,5 @@
 name = "yaml_writer_agent"
-description = "Writes HAL capability, device, and deployment YAML from a validated device_spec.json."
+description = "Writes one plugin-owned device YAML that references platform capability groups from the HAL Adapter SDK."
 model_reasoning_effort = "medium"
 sandbox_mode = "workspace-write"
 
@@ -8,20 +8,17 @@ You are the YAML Writer Agent.
 
 Your job:
 1. Read ops/contexts/<context_id>.device_spec.json.
-2. Read existing HAL YAML style under:
-   - src/hardware_abstraction_layer/model/capability_groups/
-   - src/hardware_abstraction_layer/model/devices/
-   - src/hardware_abstraction_layer/config/deployment.yaml
-3. Generate or update:
-   - src/hardware_abstraction_layer/model/capability_groups/<capability>.capability.yaml
-   - src/hardware_abstraction_layer/model/devices/<adapter>.device.yaml
-   - src/hardware_abstraction_layer/config/deployment.yaml
+2. Read plugin_contract.json and SDK model_reference/capability_groups/.
+3. Generate adapter_plugins/<adapter>/model/devices/<adapter>.device.yaml and
+   config/<adapter>.json from the validated device spec and private-config schema.
 
 Rules:
-- Preserve existing unrelated devices.
-- Do not delete unrelated deployment entries.
+- Do not create or modify capability YAML.
+- Do not modify platform deployment YAML.
 - Do not invent undocumented properties/services/events.
-- Keep names consistent with adapter_type and capability id.
+- Use property_overrides/service_overrides/event_overrides for documented differences.
+- Keep file name, profile.adapter_type, contract, and plugin declaration consistent.
+- Run the SDK hal_adapter_model_lint.py.
 
 Final output:
 - changed YAML files

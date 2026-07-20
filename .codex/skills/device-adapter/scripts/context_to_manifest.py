@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 import argparse
 import fnmatch
+import hashlib
 import json
 import re
+import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -197,12 +200,78 @@ def expand_includes(includes, excludes):
     return unique(files), missing
 
 
+def first_context_value(text, labels):
+    for label in labels:
+        match = re.search(rf"{re.escape(label)}\s*(?:是|为|=|:|：)\s*([^\n，,。]+)", text, re.I)
+        if match:
+            return match.group(1).strip().strip("`'\"")
+    return ""
+
+
+def write_plugin_contract_draft(context_id, text):
+    """Persist unknown plugin facts instead of silently inventing defaults."""
+    path = Path(f"ops/contexts/{context_id}.plugin_contract.json")
+    if path.exists():
+        return path
+    adapter_type = first_context_value(text, ["adapter_type", "adapter type"])
+    adapter_type = adapter_type or re.sub(r"[^a-z0-9_]+", "_", context_id.lower()).strip("_")
+    arch = first_context_value(text, ["target_arch", "目标架构"])
+    if not arch and re.search(r"\b(?:arm64|aarch64)\b", text, re.I):
+        arch = "aarch64"
+    platform_name = first_context_value(text, ["target_platform", "目标平台", "目标板"])
+    if not platform_name and re.search(r"rk3588", text, re.I):
+        platform_name = "RK3588"
+    refs_text = first_context_value(text, ["capability_group_refs", "能力组引用"])
+    refs = [item.strip() for item in re.split(r"[\s,，]+", refs_text) if item.strip()]
+    payload = {
+        "schema_version": "1.0",
+        "generated_by": "context_to_manifest.py",
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "input_hashes": {"context_md": "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()},
+        "context_id": context_id,
+        "delivery_mode": "runtime_plugin",
+        "adapter_type": adapter_type,
+        "vendor": first_context_value(text, ["vendor", "厂商"]),
+        "plugin_version": first_context_value(text, ["plugin_version", "插件版本"]),
+        "sdk_root": first_context_value(text, ["hal_adapter_sdk_root", "sdk_root", "HAL Adapter SDK 路径"]),
+        "platform_source_root": first_context_value(text, ["hal_platform_source_root", "平台源码根目录"]),
+        "platform_install_prefix": first_context_value(text, ["hal_platform_install_prefix", "平台安装前缀"]),
+        "sdk_output_dir": first_context_value(text, ["hal_adapter_sdk_output_dir", "SDK 输出目录"]),
+        "sdk_version": first_context_value(text, ["hal_adapter_sdk_version", "SDK 版本"]),
+        "sdk_abi": first_context_value(text, ["hal_adapter_sdk_abi", "SDK ABI"]),
+        "plugin_abi": first_context_value(text, ["hal_adapter_plugin_abi", "Plugin ABI", "插件 ABI"]),
+        "target_arch": arch,
+        "target_platform": platform_name,
+        "target_os": first_context_value(text, ["target_os", "目标操作系统", "基础系统"]),
+        "compiler_triplet": first_context_value(text, ["compiler_triplet", "编译器三元组", "目标编译器"]),
+        "runtime_image": first_context_value(text, ["runtime_image", "运行镜像"]),
+        "capability_group_refs": refs,
+        "supports_multi_instance": True,
+        "private_config": {"path": f"config/{adapter_type}.json", "schema_version": "1.0"},
+        "target_build": {
+            "build_in_runtime_container": True,
+            "sdk_build_image": "registry.ghostcloud.cn/integration/hal_dev:v1.0",
+            "plugin_build_image": "registry.ghostcloud.cn/integration/hal_dev:v1.0",
+        },
+        "plugin_source_dir": f"adapter_plugins/{adapter_type}",
+        "package_dir": f"build/{adapter_type}-package",
+    }
+    payload["unknown_fields"] = [key for key, value in payload.items() if value == "" or value == []]
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("context_id")
     parser.add_argument("--context-file")
     parser.add_argument("--stdin", action="store_true")
+    parser.add_argument("--docs-dir", default="docs")
+    parser.add_argument("--skip-docs-extract", action="store_true")
     args = parser.parse_args()
+
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", args.context_id):
+        parser.error("context_id may contain only letters, digits, dot, underscore, and hyphen")
 
     command = "context_to_manifest.py " + args.context_id
     stage("stage0_env_check", "start")
@@ -230,7 +299,22 @@ def main():
         return 2
 
     context_path.write_text(text.rstrip() + "\n", encoding="utf-8")
+    plugin_contract_path = write_plugin_contract_draft(args.context_id, text)
     stage("stage1_context_load", "success")
+
+    docs_inventory_path = Path(f"ops/contexts/{args.context_id}.docs_inventory.json")
+    docs_extraction_report = Path(f"ops/artifacts/docs/{args.context_id}/extraction_report.json")
+    if not args.skip_docs_extract:
+        extract_command = [
+            sys.executable,
+            str(Path(__file__).resolve().parent / "extract_docs.py"),
+            args.context_id,
+            "--docs-dir",
+            args.docs_dir,
+        ]
+        result = subprocess.run(extract_command, check=False)
+        if result.returncode != 0:
+            return result.returncode
 
     stage("stage2_context_validate", "start")
     includes = []
@@ -312,6 +396,11 @@ def main():
         "context_id": args.context_id,
         "summary": text.strip().splitlines()[0][:200],
         "context_file": context_path.as_posix(),
+        "docs": {
+            "root": args.docs_dir,
+            "inventory": docs_inventory_path.as_posix() if docs_inventory_path.exists() else None,
+            "extraction_report": docs_extraction_report.as_posix() if docs_extraction_report.exists() else None,
+        },
         "include": includes,
         "exclude": unique(excludes),
         "package_files_file": package_list_path.as_posix(),
@@ -371,6 +460,7 @@ def main():
         for item in missing:
             print(f"- {item}")
     print(f"context: {context_path}")
+    print(f"plugin_contract: {plugin_contract_path}")
     print(f"manifest: {manifest_path}")
     print(f"package_files: {package_list_path}")
     print(f"file_count: {len(package_files)}")

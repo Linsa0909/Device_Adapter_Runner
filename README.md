@@ -1,339 +1,243 @@
 # Device Adapter Runner
 
-Device Adapter Runner is a Codex workflow scaffold for unmanned-system device projects. It supports a docs-first HAL workflow: device manuals, protocol notes, SDK notes, and natural language context are converted into HAL model YAML, adapter code, dependency plans, Docker artifacts, remote deployment, and staged test/fix loops.
+Device Adapter Runner is a docs-first Codex workflow for producing independent
+HAL runtime Adapter plugins for unmanned-system devices. It consumes a versioned
+HAL Adapter SDK and delivers a plugin `.so`, private dependencies, one device
+model, and release evidence without rebuilding or modifying the HAL platform.
 
-The workflow is designed for cases where the project starts without runtime packaging files. The adapter can generate runtime-only files such as `Dockerfile`, `run.sh`, `docker-compose.yml`, `.dockerignore`, and a minimal `CMakeLists.txt` when needed.
+## Default Contract
 
-## What It Provides
-
-- Context-first and docs-first HAL adaptation from natural language descriptions.
-- Manual/document coverage checks before code generation.
-- HAL capability/device/deployment YAML generation.
-- Adapter implementation and CMake/factory/deployment registration checks.
-- Generic dependency planning for apt packages, SDK headers/libs, RPATH, device nodes, udev rules, subprocesses, ports, mounts, and healthchecks.
-- Manifest-based file selection instead of packaging the whole repository.
-- Runtime file generation for C/C++ device projects.
-- x86_64 and arm64 Docker image builds with Docker buildx.
-- Local package verification with package tree, SHA-256 output, symlink handling, release-entry checks, and non-interactive script checks.
-- Native library architecture inspection for vendor `.so` and `.a` files.
-- Native dependency closure checks for adapter-started subprocesses and helper daemons.
-- Remote deploy and test over SSH.
-- Stage markers and structured failure output for agent-driven repair loops.
-- A documented agent/stage ownership model with global status and per-run logs.
-- Stage boundary policy and per-stage JSON state files for auditability.
-
-## Directory Layout
+The default product is:
 
 ```text
-.codex/
-  config.toml
-  agents/
-    context-mapper.toml
-    docs-intake-agent.toml
-    capability-modeler-agent.toml
-    deployment-planner-agent.toml
-    sdk-dependency-auditor-agent.toml
-    spec-validator-agent.toml
-    yaml-writer-agent.toml
-    hal-adapter-builder.toml
-    hal-registration-verifier-agent.toml
-    package-builder.toml
-    docker-builder.toml
-    remote-deployer.toml
-    remote-tester.toml
-    failure-debugger.toml
-  skills/
-    device-adapter/
-      SKILL.md
-      scripts/
-        context_to_manifest.py
-        generate_runtime_files.py
-        package_by_manifest.py
-        verify_package.py
-        verify_hal_adapter.py
-        verify_native_deps.py
-        docker_package.sh
-        docker_smoke_test.sh
-        remote_deploy.sh
-        remote_test.sh
-        stage_runner.sh
-ops/
-  contexts/
-  artifacts/
-AGENTS.md
-docs/device_adapter_agent_workflow.md
+adapters/libhal_adapter_<adapter_type>.so
+config/<adapter_type>.json
+deps/*.so*                              # optional private dependencies
+model/devices/<adapter_type>.device.yaml
+README.md
 ```
 
-## Agent Workflow
+The workflow does not create capability YAML, add a Factory branch, modify the
+platform main CMake, or build a per-device Docker image. Platform capability
+groups and ABI libraries remain platform-owned.
 
-The current workflow is a staged Codex-agent pipeline:
+## Prerequisites
 
-```text
-context-mapper
-  -> docs-intake-agent
-  -> capability-modeler-agent
-  -> deployment-planner-agent
-  -> sdk-dependency-auditor-agent
-  -> spec-validator-agent
-  -> yaml-writer-agent
-  -> hal-adapter-builder
-  -> hal-registration-verifier-agent
-  -> package-builder
-  -> docker-builder
-  -> remote-deployer
-  -> remote-tester
-  -> failure-debugger
-```
+- Codex with the global `device-adapter` skill installed.
+- Device manuals and SDK material under the target project's `docs/`.
+- An immutable HAL Adapter SDK matching the target runtime image.
+- CMake and a native or declared cross compiler for the target architecture.
+- Docker only when validating/exporting the existing HAL runtime image.
+- SSH access for board deployment and hardware acceptance.
 
-Detailed ownership, error routing, logs, status files, and maintenance rules are in:
+For AArch64 targets, all HAL SDK, minimal Adapter, and device-plugin compilation
+runs over SSH inside the declared ARM64 build images. The local x86 host only
+prepares contracts/source bundles and validates returned evidence; it does not
+compile ARM64 C++ artifacts.
 
-```text
-docs/device_adapter_agent_workflow.md
-```
-
-Recorded future additions, not implemented yet:
-
-```text
-dependency-fetch-agent
-vendor-materializer-agent
-acceptance-planner-agent
-```
-
-Current hardening controls:
-
-```text
-.codex/skills/device-adapter/scripts/agent_boundary_policy.json
-ops/artifacts/stages/<context_id>/<stage_name>.json
-ops/artifacts/<context_id>.remediation_plan.json
-```
-
-## Command Flow
-
-In some Codex CLI builds, `/device-adapter` is not a native slash command. If the CLI says `Unrecognized command`, trigger the skill in natural language:
-
-```text
-调用 device-adapter skill：context infrared_camera
-
-<paste natural language context and docs/SDK paths>
-```
-
-Use this logical command flow:
-
-```text
-/device-adapter context infrared_camera
-/device-adapter model infrared_camera
-/device-adapter adapt infrared_camera --allow-code
-/device-adapter verify infrared_camera
-/device-adapter package infrared_camera
-/device-adapter docker-package infrared_camera -arm
-/device-adapter docker-package infrared_camera -x86
-/device-adapter docker-package infrared_camera -all
-/device-adapter deploy infrared_camera --host 192.168.1.100 --user root -arm
-/device-adapter test infrared_camera --host 192.168.1.100 --user root
-/device-adapter loop infrared_camera --host 192.168.1.100 --user root -arm
-/device-adapter full infrared_camera --host 192.168.1.100 --user root -arm --allow-code
-```
-
-The scripts can also be run directly:
+PDF extraction and OCR on Ubuntu/WSL:
 
 ```bash
-bash .codex/skills/device-adapter/scripts/stage_runner.sh model infrared_camera
-bash .codex/skills/device-adapter/scripts/stage_runner.sh verify infrared_camera
-bash .codex/skills/device-adapter/scripts/stage_runner.sh package infrared_camera
-bash .codex/skills/device-adapter/scripts/stage_runner.sh docker-package infrared_camera -arm
+sudo apt update
+sudo apt install -y poppler-utils tesseract-ocr \
+  tesseract-ocr-chi-sim tesseract-ocr-eng
 ```
 
-`stage_runner.sh` now delegates to `stage_orchestrator.py` for all staged actions. Agent-owned stages are treated as handoff gates: if a required artifact such as `docs_coverage.json` or `device_spec.json` is missing, the command fails at that exact stage and writes `ops/artifacts/last_failure.json`.
-
-## Natural Language Context Example
+## Workflow
 
 ```text
-这是一个 C++ 红外相机程序，读取 /dev/infrared_camera，然后通过 ffmpeg 推送 RTMP。
-当前只提供 C++ 源码、头文件、链接库和配置，没有 Dockerfile、run.sh、docker-compose.yml。
-代码在 src/。
-头文件在 include/。
-厂商库在 libs/。
-SDK 在 sdk/。
-配置在 configs/infrared_camera.yaml。
-不要打包 build、dist、logs、test_videos、.git、__pycache__。
-目标架构需要 x86 和 arm64。
-远端板子是 arm64，默认用户 root。
+/device-adapter context <id>
+/device-adapter model-prep <id>
+/device-adapter target-sdk-package <id> --host <arm64-host> --user root
+/device-adapter sdk-check <id>
+/device-adapter model <id>
+/device-adapter adapt <id> --allow-code
+/device-adapter target-plugin-build <id> --host <arm64-host> --user root
+/device-adapter verify <id>
+/device-adapter review <id>
+/device-adapter approve <id> --by <name>
+/device-adapter package <id>
+/device-adapter deploy <id> --host <host> --user root
+/device-adapter test <id> --host <host> --user root
 ```
 
-For docs-first HAL adaptation, context should name the manual/protocol/SDK paths and the expected integration target:
-
-```text
-设备是某型号雷达。
-设备手册在 docs/lidar_manual.pdf。
-协议文档在 docs/lidar_protocol.md。
-SDK 在 vendor/lidar_sdk/。
-目标是接入 yunshu HAL 平台，生成 capability/device/deployment 三个 YAML。
-adapter 需要通过 UDP 接收点云，启动一个 vendor daemon，并暴露状态、启动、停止、重连服务。
-需要识别 apt、SDK header、arm64 .so、设备节点、端口、healthcheck。
-```
-
-The context step generates:
-
-```text
-ops/contexts/<context_id>.context.md
-ops/contexts/<context_id>.manifest.json
-ops/artifacts/<context_id>.package_files.txt
-```
-
-## Generated Artifacts
-
-Package verification creates:
-
-```text
-ops/artifacts/<context_id>_package.tar.gz
-ops/artifacts/<context_id>.package_tree.txt
-ops/artifacts/<context_id>.package.sha256
-ops/artifacts/<context_id>.package_verify.json
-```
-
-Docker packaging creates:
-
-```text
-ops/artifacts/<context_id>_amd64_image.tar
-ops/artifacts/<context_id>_arm64_image.tar
-ops/artifacts/<context_id>_<arch>_image_inspect.json
-ops/artifacts/<context_id>_<arch>_native_deps.json
-ops/artifacts/logs/<context_id>_docker_build_<arch>.log
-```
-
-HAL verification creates:
-
-```text
-ops/artifacts/<context_id>.spec_validation.json
-ops/artifacts/<context_id>.dependency_validation.json
-ops/artifacts/<context_id>.yaml_validation.json
-ops/artifacts/<context_id>.registration_report.json
-ops/artifacts/<context_id>.source_path_validation.json
-ops/artifacts/<context_id>.cmake_install_validation.json
-ops/artifacts/<context_id>.release_script_validation.json
-```
-
-Failures write:
-
-```text
-ops/artifacts/last_failure.json
-ops/artifacts/<context_id>.stage_checkpoint.json
-ops/artifacts/<context_id>.status.json
-ops/artifacts/<context_id>.generated_files.txt
-```
-
-Staged commands append a live log:
-
-```text
-ops/artifacts/logs/<context_id>_stage_runner.log
-```
-
-Watch it while a workflow runs:
+Use the deterministic runner when slash commands are unavailable:
 
 ```bash
-tail -f ops/artifacts/logs/<context_id>_stage_runner.log
+bash .codex/skills/device-adapter/scripts/stage_runner.sh model-prep <id>
+bash .codex/skills/device-adapter/scripts/stage_runner.sh target-sdk-package <id> --host <arm64-host> --user root
+bash .codex/skills/device-adapter/scripts/stage_runner.sh sdk-check <id>
+bash .codex/skills/device-adapter/scripts/stage_runner.sh target-plugin-build <id> --host <arm64-host> --user root
+bash .codex/skills/device-adapter/scripts/stage_runner.sh verify <id>
 ```
 
-`last_failure.json` includes `log_file` when available, so you can send the exact failing log back to Codex.
-
-`status.json` is the quick progress view while Codex is running:
-
-```bash
-cat ops/artifacts/<context_id>.status.json
-```
-
-Per-stage JSON state is the automation source of truth:
-
-```bash
-cat ops/artifacts/stages/<context_id>/<stage_name>.json
-```
-
-`generated_files.txt` records which stage produced each handoff artifact or generated file.
-
-For a full stage-to-agent map and common error routing table, see:
-
-```text
-docs/device_adapter_agent_workflow.md
-```
-
-If a stage writes outside its declared allowlist, the orchestrator fails it with:
-
-```text
-BOUNDARY_WRITE_VIOLATION
-```
-
-## Closed-Loop Delivery Packages
-
-When the context asks for a complete board-side delivery package, `manifest.json` should include:
+The target build contract keeps build and runtime images separate:
 
 ```json
 {
-  "delivery": {
-    "closed_loop_package": true,
-    "required_root_files": ["config.env", "install.sh", "run.sh", "status.sh", "view.sh", "DEPLOY.md"]
-  }
+  "target_build": {
+    "build_in_runtime_container": true,
+    "sdk_build_image": "registry.ghostcloud.cn/integration/hal_dev:v1.0",
+    "plugin_build_image": "registry.ghostcloud.cn/integration/hal_dev:v1.0"
+  },
+  "runtime_image": "<immutable HAL runtime image>"
 }
 ```
 
-Package verification then fails if these root entries are missing, if a declared runtime file is missing, or if any packaged script uses interactive Docker flags such as `docker exec -it`.
+`target-sdk-package` and `target-plugin-build` use SSH only for transfer and
+orchestration. Compilation and native ELF/dependency checks run in ephemeral
+`docker run --rm` containers on the target board. Build outputs and evidence are
+preserved through a mounted fingerprinted workspace and fetched back locally.
 
-For ROS2/HAL packages, the root `run.sh` is a host-side launcher. Container entrypoints should live under `ops/scripts/` or a package-local path and must be non-interactive for SSH automation.
+`docker-package` no longer compiles HAL. It validates the architecture of the
+runtime image declared in `plugin_contract.json`; `--save-runtime-image` exports
+that existing platform image for offline board delivery.
 
-## Cross-Architecture Behavior
+## Required Contract
 
-On an x86 WSL host, `docker-package -arm` builds and saves an arm64 image tar locally, but does not run the arm64 container locally by default. Runtime proof for arm64 should happen on the arm64 board or server:
-
-```text
-/device-adapter deploy infrared_camera --host <arm64-host> --user root -arm
-/device-adapter test infrared_camera --host <arm64-host> --user root
-```
-
-Use `--smoke` only if QEMU/binfmt is configured locally and you intentionally want to force local cross-architecture `docker run --rm`.
-
-## Stage Contract
-
-Workflow scripts emit stage markers:
+`context` writes a draft:
 
 ```text
-[AGENT_STAGE] stage=<stage_name> status=start
-[AGENT_STAGE] stage=<stage_name> status=success
-[AGENT_STAGE] stage=<stage_name> status=fail exit_code=<code>
+ops/contexts/<id>.plugin_contract.json
 ```
 
-Current core stages include:
+`model` must complete:
+
+- adapter type, vendor, and plugin version;
+- SDK root, version, and ABI;
+- plugin ABI;
+- target architecture and platform;
+- target OS and compiler triplet;
+- immutable HAL runtime image;
+- platform capability-group references;
+- mandatory multi-instance support.
+
+Unknown required values block `sdk-check`. The skill does not invent them and
+does not fall back to old in-tree integration when plugin SDK support is absent.
+
+If the immutable SDK is absent, complete these contract fields first:
+
+```json
+{
+  "platform_source_root": "/path/to/plugin-enabled/yunshu_access",
+  "platform_install_prefix": "/path/to/install/hardware_abstraction_layer",
+  "sdk_output_dir": "build/adapter-sdk",
+  "sdk_root": "build/adapter-sdk/hal_adapter_sdk_v1.1.0"
+}
+```
+
+`sdk-package` calls the platform-owned
+`src/hardware_abstraction_layer/scripts/package_adapter_sdk.sh`. It does not
+assemble SDK files itself. The install prefix must already contain the three HAL
+platform libraries built for the declared target architecture.
+
+## Generated Plugin Source
 
 ```text
-stage0_env_check
-stage1_context_intake
-stage2_docs_inventory
-stage3_docs_coverage
-stage4_capability_model
-stage5_deployment_plan
-stage6_dependency_audit
-stage7_spec_validate
-stage8_yaml_generate
-stage9_yaml_validate
-stage10_adapter_codegen
-stage11_hal_registration_verify
-stage12_package_manifest
-stage13_package_verify
-stage14_docker_build_x86_optional
-stage15_docker_build_arm64
-stage16_image_verify
-stage17_remote_transfer
-stage18_remote_prepare
-stage19_remote_device_probe
-stage20_remote_run
-stage21_remote_test
-stage22_collect_logs
-stage23_failure_classification
+adapter_plugins/<adapter_type>/
+  CMakeLists.txt
+  README.md
+  include/<adapter_type>/<adapter_type>_adapter.hpp
+  src/<adapter_type>_adapter.cpp
+  src/<adapter_type>_plugin.cpp
+  config/<adapter_type>.json
+  model/devices/<adapter_type>.device.yaml
+  third_party/                 # optional
+  cmake/VendorizeRuntime.cmake # optional
 ```
 
-## Notes
+The C ABI entry exports:
 
-- Business C/C++ source is not modified by default.
-- Adapter source generation or modification requires `--allow-code`.
-- Runtime-only files may be generated or patched.
-- Vendor libraries must match the target architecture. An x86-only `.so` cannot run in an arm64 container unless an arm64 version is provided.
-- Every executed native helper must have its shared-library closure satisfied by packaged libs, declared library paths, or explicit system libraries before Docker build/deploy.
-- Device-specific runtime assumptions must come from context/manuals. Do not assume FFmpeg, ZLM, RTMP, V4L2, serial, CAN, UDP, TCP, or a helper daemon unless specified.
+```text
+hal_get_adapter_sdk_abi_v1
+hal_get_adapter_plugin_v1
+```
+
+Every `create()` must return an independent instance. Device paths, ports,
+threads, processes, handles, callbacks, state, and logs are instance-owned.
+
+## Verification
+
+The deterministic gate checks:
+
+- SDK version, ABI, CMake config, platform libs, model linter, and capabilities;
+- standalone plugin build and target ELF architecture;
+- both ABI symbols;
+- `$ORIGIN/../deps` RPATH/RUNPATH;
+- complete private `DT_NEEDED` closure;
+- SDK device-model lint;
+- forbidden capability/platform files;
+- two simultaneous create/destroy instances.
+
+Then the read-only verification Agent runs build/tests,
+`verification-before-completion`, C/C++ review, and differential review. Explicit
+human approval is bound to the tested source and contract fingerprint.
+
+Primary reports:
+
+```text
+ops/artifacts/<id>.sdk_check.json
+ops/artifacts/<id>.plugin_build.json
+ops/artifacts/<id>.abi_validation.json
+ops/artifacts/<id>.plugin_declaration_validation.json
+ops/artifacts/<id>.elf_arch_validation.json
+ops/artifacts/<id>.dependency_closure.json
+ops/artifacts/<id>.config_validation.json
+ops/artifacts/<id>.source_contract_validation.json
+ops/artifacts/<id>.binding_coverage.json
+ops/artifacts/<id>.fastpath_coverage.json
+ops/artifacts/<id>.model_lint.json
+ops/artifacts/<id>.multi_instance_validation.json
+ops/artifacts/<id>.quality_gate_report.json
+ops/artifacts/<id>.package_manifest.json
+```
+
+## Runtime Deployment
+
+The formal package is extracted to:
+
+```text
+/etc/vega/access/runtime/adapters
+/etc/vega/access/runtime/config
+/etc/vega/access/runtime/deps
+/etc/vega/access/runtime/model/devices
+```
+
+The platform runtime mounts those paths at `/hal-runtime`. Deployment never
+compiles HAL or the plugin.
+
+Remote acceptance has five required groups in
+`ops/contexts/<id>.deployment_plan.json`:
+
+```text
+load -> instance -> capability -> functional -> multi_instance
+```
+
+The plan also requires fixed scenarios for invalid/missing config, instance
+selection mismatch, reconnect, SlowPath, FastPath, fault injection, lifecycle
+cleanup, two real instances, delayed reload, and soak. Every scenario carries an
+executable command, expected result, and evidence path; missing coverage is
+BLOCKED before remote execution.
+
+Each group contains evidence-driven commands and expected output. Service
+discovery, process existence, and container startup alone are not success.
+
+## Status And Logs
+
+```bash
+cat ops/artifacts/<id>.status.json
+cat ops/artifacts/last_failure.json
+tail -f ops/artifacts/logs/<id>_stage_runner.log
+```
+
+Every failure identifies the stage, stable error code, evidence, responsible
+Agent, repair scope, and resume point. The failure debugger writes a remediation
+plan only; code repair requires user authorization.
+
+## Important Baseline Check
+
+A compatible platform source or SDK must contain the Adapter SDK CMake config,
+plugin ABI header, architecture-specific platform libraries, model references,
+and model lint tool. A legacy platform that only calls
+`DeviceAdapterFactory::create()` is not plugin-compatible and is blocked by
+`sdk-check`.

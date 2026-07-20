@@ -9,8 +9,13 @@ actions:
   context
   package
   model
+  sdk-package
+  sdk-check
   adapt
+  plugin-build
   verify
+  review
+  approve
   full
   docker-package
   deploy
@@ -41,11 +46,26 @@ case "$action" in
   model)
     python3 "$base_dir/stage_orchestrator.py" model "$context_id" "$@"
     ;;
+  sdk-package)
+    python3 "$base_dir/stage_orchestrator.py" sdk-package "$context_id" "$@"
+    ;;
+  sdk-check)
+    python3 "$base_dir/stage_orchestrator.py" sdk-check "$context_id" "$@"
+    ;;
   adapt)
     python3 "$base_dir/stage_orchestrator.py" adapt "$context_id" "$@"
     ;;
+  plugin-build)
+    python3 "$base_dir/stage_orchestrator.py" plugin-build "$context_id" "$@"
+    ;;
   verify)
     python3 "$base_dir/stage_orchestrator.py" verify "$context_id" "$@"
+    ;;
+  review)
+    python3 "$base_dir/stage_orchestrator.py" review "$context_id" "$@"
+    ;;
+  approve)
+    python3 "$base_dir/stage_orchestrator.py" approve "$context_id" "$@"
     ;;
   full)
     python3 "$base_dir/stage_orchestrator.py" full "$context_id" "$@"

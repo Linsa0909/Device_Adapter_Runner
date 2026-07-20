@@ -55,17 +55,45 @@ STAGES: dict[str, Stage] = {
         ("ops/contexts/{context_id}.docs_inventory.json",),
         "Run the docs-intake-agent for /device-adapter model {context_id}",
     ),
+    "stage2_docs_extract": Stage(
+        "stage2_docs_extract",
+        "extract_docs.py",
+        ("ops/artifacts/docs/{context_id}/extraction_report.json",),
+        "Rerun /device-adapter context {context_id} after installing PDF/OCR prerequisites",
+    ),
     "stage3_docs_coverage": Stage(
         "stage3_docs_coverage",
         "docs-intake-agent",
         ("ops/contexts/{context_id}.docs_coverage.json",),
         "Run the docs-intake-agent coverage pass for /device-adapter model {context_id}",
     ),
+    "stage4_functional_chain_check": Stage(
+        "stage4_functional_chain_check",
+        "acceptance-planner-agent",
+        (
+            "ops/contexts/{context_id}.functional_chain.json",
+            "ops/contexts/{context_id}.dependency_checklist.json",
+            "ops/artifacts/{context_id}.dependency_gaps.md",
+        ),
+        "Run acceptance-planner-agent or functional_chain_check.py to complete the device functional-chain checklist",
+    ),
     "stage4_capability_model": Stage(
         "stage4_capability_model",
         "capability-modeler-agent",
         ("ops/contexts/{context_id}.device_spec.json",),
         "Run capability-modeler-agent and write ops/contexts/{context_id}.device_spec.json",
+    ),
+    "stage4a_sdk_contract_prepare": Stage(
+        "stage4a_sdk_contract_prepare",
+        "prepare_plugin_contract.py",
+        ("ops/contexts/{context_id}.plugin_contract.json",),
+        "Run /device-adapter model-prep {context_id}",
+    ),
+    "stage4b_plugin_contract": Stage(
+        "stage4b_plugin_contract",
+        "capability-modeler-agent",
+        ("ops/contexts/{context_id}.plugin_contract.json",),
+        "Complete the runtime plugin contract from the target SDK and runtime image",
     ),
     "stage5_deployment_plan": Stage(
         "stage5_deployment_plan",
@@ -79,6 +107,30 @@ STAGES: dict[str, Stage] = {
         ("ops/contexts/{context_id}.device_spec.json",),
         "Run sdk-dependency-auditor-agent or provide runtime_requirements in device_spec.json",
     ),
+    "stage6a_sdk_package": Stage(
+        "stage6a_sdk_package",
+        "sdk-packager-agent",
+        ("ops/artifacts/{context_id}.sdk_package.json",),
+        "Run /device-adapter sdk-package {context_id}",
+    ),
+    "stage6a_target_hal_build": Stage(
+        "stage6a_target_hal_build",
+        "sdk-packager-agent",
+        ("ops/artifacts/{context_id}.target_sdk_package.json",),
+        "Run /device-adapter target-sdk-package {context_id}",
+    ),
+    "stage6a_sdk_check": Stage(
+        "stage6a_sdk_check",
+        "sdk-dependency-auditor-agent",
+        ("ops/contexts/{context_id}.sdk_inventory.json", "ops/artifacts/{context_id}.sdk_check.json"),
+        "Run /device-adapter sdk-check {context_id}",
+    ),
+    "stage6b_sdk_validate": Stage(
+        "stage6b_sdk_validate",
+        "sdk-packager-agent",
+        ("ops/artifacts/{context_id}.sdk_validation.json",),
+        "Build the SDK minimal Adapter example on the target architecture",
+    ),
     "stage7_spec_validate": Stage(
         "stage7_spec_validate",
         "spec-validator-agent",
@@ -90,13 +142,58 @@ STAGES: dict[str, Stage] = {
         "adapt_hal_device.py",
         next_action="Run /device-adapter adapt {context_id}",
     ),
-    "stage9_yaml_validate": Stage("stage9_yaml_validate", "verify_hal_adapter.py"),
     "stage10_adapter_codegen": Stage(
         "stage10_adapter_codegen",
         "hal-adapter-builder",
         next_action="Run hal-adapter-builder with --allow-code or report adapter code gaps",
     ),
-    "stage11_hal_registration_verify": Stage("stage11_hal_registration_verify", "verify_hal_adapter.py"),
+    "stage10a_tdd_evidence": Stage(
+        "stage10a_tdd_evidence",
+        "hal-adapter-builder",
+        ("ops/artifacts/{context_id}.tdd_report.json",),
+        "Run test-driven-development during adapt and record RED/GREEN evidence",
+    ),
+    "stage10b_runtime_materialize": Stage(
+        "stage10b_runtime_materialize",
+        "device-adapter-runtime",
+        next_action="Rerun /device-adapter adapt {context_id} before review and approval",
+    ),
+    "stage10c_plugin_build": Stage(
+        "stage10c_plugin_build",
+        "plugin-builder-agent",
+        ("ops/artifacts/{context_id}.plugin_build.json",),
+        "Run /device-adapter plugin-build {context_id}",
+    ),
+    "stage11_plugin_verify": Stage(
+        "stage11_plugin_verify",
+        "verification-agent",
+        ("ops/artifacts/{context_id}.abi_validation.json", "ops/artifacts/{context_id}.dependency_closure.json"),
+        "Run /device-adapter verify {context_id}",
+    ),
+    "stage11a_independent_verification": Stage(
+        "stage11a_independent_verification",
+        "verification-agent",
+        ("ops/artifacts/{context_id}.verification_report.json",),
+        "Run verification-agent with verification-before-completion",
+    ),
+    "stage11b_cpp_review": Stage(
+        "stage11b_cpp_review",
+        "verification-agent",
+        ("ops/artifacts/{context_id}.c_review_report.json",),
+        "Run c-review for C/C++ scope",
+    ),
+    "stage11c_differential_review": Stage(
+        "stage11c_differential_review",
+        "verification-agent",
+        ("ops/artifacts/{context_id}.differential_review_report.json",),
+        "Run differential-review for the current change set",
+    ),
+    "stage11d_human_approval": Stage(
+        "stage11d_human_approval",
+        "human",
+        ("ops/artifacts/{context_id}.human_approval.json",),
+        "Run /device-adapter approve {context_id} --by <name>",
+    ),
     "stage12_package_manifest": Stage("stage12_package_manifest", "package_by_manifest.py"),
     "stage13_package_verify": Stage("stage13_package_verify", "verify_package.py"),
     "stage14_docker_build_x86_optional": Stage("stage14_docker_build_x86_optional", "docker_package.sh"),
@@ -116,8 +213,11 @@ MODEL_STAGES = (
     "stage0_env_check",
     "stage1_context_intake",
     "stage2_docs_inventory",
+    "stage2_docs_extract",
     "stage3_docs_coverage",
+    "stage4_functional_chain_check",
     "stage4_capability_model",
+    "stage4b_plugin_contract",
     "stage5_deployment_plan",
     "stage6_dependency_audit",
     "stage7_spec_validate",
@@ -128,15 +228,30 @@ RERUN_STARTS = {
     "stage0_env_check": "model",
     "stage1_context_intake": "model",
     "stage2_docs_inventory": "model",
+    "stage2_docs_extract": "model",
     "stage3_docs_coverage": "model",
+    "stage4_functional_chain_check": "model",
     "stage4_capability_model": "model",
+    "stage4a_sdk_contract_prepare": "model-prep",
+    "stage4b_plugin_contract": "model",
     "stage5_deployment_plan": "model",
     "stage6_dependency_audit": "verify",
+    "stage6a_sdk_package": "sdk-package",
+    "stage6a_target_hal_build": "target-sdk-package",
+    "stage6a_sdk_check": "sdk-check",
+    "stage6b_sdk_validate": "sdk-check",
     "stage7_spec_validate": "verify",
     "stage8_yaml_generate": "adapt",
-    "stage9_yaml_validate": "verify",
     "stage10_adapter_codegen": "adapt",
-    "stage11_hal_registration_verify": "verify",
+    "stage10a_tdd_evidence": "adapt",
+    "stage10b_runtime_materialize": "adapt",
+    "stage10c_plugin_build": "plugin-build",
+    "stage10c_target_plugin_build": "target-plugin-build",
+    "stage11_plugin_verify": "verify",
+    "stage11a_independent_verification": "verify",
+    "stage11b_cpp_review": "verify",
+    "stage11c_differential_review": "verify",
+    "stage11d_human_approval": "approve",
     "stage12_package_manifest": "package",
     "stage13_package_verify": "package",
     "stage14_docker_build_x86_optional": "docker-package",
@@ -297,6 +412,34 @@ def update_status(stage_name: str, status: str, exit_code: int | None = None) ->
     )
 
 
+def supersede_pre_sdk_model_failure(context_id: str) -> None:
+    failure_path = ARTIFACTS / "last_failure.json"
+    if failure_path.is_file():
+        try:
+            failure = json.loads(failure_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            failure = {}
+        if (
+            failure.get("context_id") == context_id
+            and failure.get("stage") == "stage4_capability_model"
+            and failure.get("error_code") == "REQUIRED_ARTIFACT_MISSING"
+        ):
+            failure_path.unlink()
+    path = status_path(context_id)
+    if not path.is_file():
+        return
+    try:
+        status = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return
+    status["failed_stages"] = [
+        stage for stage in status.get("failed_stages", [])
+        if stage != "stage4_capability_model"
+    ]
+    status.setdefault("superseded_stages", []).append("stage4_capability_model")
+    json_write(path, status)
+
+
 def fail(context_id: str, stage_name: str, reason: str, evidence: list[str], next_action: str, exit_code: int = 2) -> int:
     stage = STAGES.get(stage_name, Stage(stage_name, "stage_orchestrator.py"))
     failure_id = f"f-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{stage_name}"
@@ -427,6 +570,35 @@ def git_changed_files() -> set[str] | None:
     return files
 
 
+def path_state(path_text: str) -> str:
+    path = Path(path_text)
+    if not path.exists() and not path.is_symlink():
+        return "missing"
+    if path.is_symlink():
+        return "symlink:" + os.readlink(path)
+    if path.is_file():
+        return sha256_file(path)
+    return "other"
+
+
+def changed_file_states(paths: set[str] | None) -> dict[str, str]:
+    if paths is None:
+        return {}
+    return {path: path_state(path) for path in paths}
+
+
+def stage_changed_files(
+    before_files: set[str], before_states: dict[str, str],
+    after_files: set[str], after_states: dict[str, str],
+) -> set[str]:
+    candidates = before_files | after_files
+    return {
+        path for path in candidates
+        if (path in before_files) != (path in after_files)
+        or before_states.get(path) != after_states.get(path)
+    }
+
+
 def load_boundary_policy() -> dict[str, Any]:
     path = SCRIPT_DIR / "agent_boundary_policy.json"
     if not path.exists():
@@ -521,12 +693,19 @@ def run_command(context_id: str, stage_name: str, command: list[str], *, preserv
     marker(stage_name, "start")
     log_line("[AGENT_COMMAND] " + " ".join(command))
     before_changes = git_changed_files()
+    before_states = changed_file_states(before_changes)
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
     assert process.stdout is not None
     for line in process.stdout:
         append_raw_line(line)
     returncode = process.wait()
     if returncode != 0:
+        if returncode == 22 and stage_name == "stage11d_human_approval":
+            marker(stage_name, "waiting_approval", returncode)
+            log_line(
+                f"[AGENT_WAIT] human approval required for command: {' '.join(command)}"
+            )
+            return returncode
         if preserve_child_failure:
             marker(stage_name, "fail", returncode)
             log_line(f"[AGENT_COMMAND_FAIL] preserved child failure for command: {' '.join(command)} exit_code={returncode}")
@@ -541,7 +720,8 @@ def run_command(context_id: str, stage_name: str, command: list[str], *, preserv
         )
     after_changes = git_changed_files()
     if before_changes is not None and after_changes is not None:
-        stage_changes = after_changes - before_changes
+        after_states = changed_file_states(after_changes)
+        stage_changes = stage_changed_files(before_changes, before_states, after_changes, after_states)
         ok, report = enforce_boundary(context_id, stage_name, stage_changes)
         if not ok:
             return fail(
@@ -584,6 +764,15 @@ def run_model(context_id: str) -> int:
             if rc:
                 return rc
             continue
+        if stage_name == "stage4_functional_chain_check":
+            rc = run_command(
+                context_id,
+                stage_name,
+                [sys.executable, str(SCRIPT_DIR / "functional_chain_check.py"), context_id],
+            )
+            if rc:
+                return rc
+            continue
         if stage_name == "stage6_dependency_audit" and spec_has_runtime_requirements(context_id):
             marker(stage_name, "start")
             marker(stage_name, "success")
@@ -592,6 +781,36 @@ def run_model(context_id: str) -> int:
         if not ensure_outputs(context_id, stage_name):
             return 2
     return 0
+
+
+def run_model_prep(context_id: str, extra: list[str]) -> int:
+    rc = env_check(context_id)
+    if rc:
+        return rc
+    for stage_name in (
+        "stage1_context_intake", "stage2_docs_inventory", "stage2_docs_extract",
+        "stage3_docs_coverage", "stage4_functional_chain_check",
+    ):
+        if stage_name == "stage2_docs_extract":
+            if not ensure_outputs(context_id, stage_name):
+                return 2
+        elif stage_name == "stage4_functional_chain_check":
+            rc = run_command(
+                context_id, stage_name,
+                [sys.executable, str(SCRIPT_DIR / "functional_chain_check.py"), context_id],
+            )
+            if rc:
+                return rc
+        elif not ensure_outputs(context_id, stage_name):
+            return 2
+    rc = run_command(
+        context_id,
+        "stage4a_sdk_contract_prepare",
+        [sys.executable, str(SCRIPT_DIR / "prepare_plugin_contract.py"), context_id, *extra],
+    )
+    if rc == 0:
+        supersede_pre_sdk_model_failure(context_id)
+    return rc
 
 
 def env_check(context_id: str) -> int:
@@ -609,33 +828,181 @@ def run_adapt(context_id: str, extra: list[str]) -> int:
         return rc
     if not ensure_outputs(context_id, "stage7_spec_validate"):
         return 2
+    rc = run_sdk_check(context_id)
+    if rc:
+        return rc
     rc = run_command(context_id, "stage8_yaml_generate", [sys.executable, str(SCRIPT_DIR / "adapt_hal_device.py"), context_id, *extra])
     if rc:
         return rc
-    return run_verify(context_id)
+    return 0
 
 
-def run_verify(context_id: str) -> int:
+def run_sdk_check(context_id: str) -> int:
     rc = env_check(context_id)
     if rc:
         return rc
-    # verify_hal_adapter.py emits its own detailed stage7/stage6/stage9/stage11 markers.
-    return run_command(
+    rc = run_command(
         context_id,
-        "stage7_spec_validate",
-        [sys.executable, str(SCRIPT_DIR / "verify_hal_adapter.py"), context_id],
+        "stage6a_sdk_check",
+        [sys.executable, str(SCRIPT_DIR / "plugin_sdk_check.py"), context_id],
         preserve_child_failure=True,
     )
+    if rc:
+        return rc
+    return run_command(
+        context_id,
+        "stage6b_sdk_validate",
+        [sys.executable, str(SCRIPT_DIR / "verify_adapter_sdk.py"), context_id],
+        preserve_child_failure=True,
+    )
+
+
+def run_target_sdk_package(context_id: str, extra: list[str]) -> int:
+    rc = env_check(context_id)
+    if rc:
+        return rc
+    rc = run_command(
+        context_id,
+        "stage6a_target_hal_build",
+        [sys.executable, str(SCRIPT_DIR / "remote_package_adapter_sdk.py"), context_id, *extra],
+        preserve_child_failure=True,
+    )
+    if rc:
+        return rc
+    rc = run_command(
+        context_id,
+        "stage6a_sdk_check",
+        [sys.executable, str(SCRIPT_DIR / "plugin_sdk_check.py"), context_id, "--bootstrap"],
+        preserve_child_failure=True,
+    )
+    if rc:
+        return rc
+    return run_command(
+        context_id,
+        "stage6b_sdk_validate",
+        [sys.executable, str(SCRIPT_DIR / "verify_adapter_sdk.py"), context_id, "--target-evidence"],
+        preserve_child_failure=True,
+    )
+
+
+def run_sdk_package(context_id: str, extra: list[str]) -> int:
+    rc = run_command(
+        context_id,
+        "stage6a_sdk_package",
+        [sys.executable, str(SCRIPT_DIR / "package_adapter_sdk.py"), context_id, *extra],
+        preserve_child_failure=True,
+    )
+    if rc:
+        return rc
+    return run_sdk_check(context_id)
+
+
+def run_plugin_build(context_id: str, extra: list[str]) -> int:
+    rc = run_sdk_check(context_id)
+    if rc:
+        return rc
+    return run_command(
+        context_id,
+        "stage10c_plugin_build",
+        [sys.executable, str(SCRIPT_DIR / "plugin_build.py"), context_id, *extra],
+        preserve_child_failure=True,
+    )
+
+
+def run_target_plugin_build(context_id: str, extra: list[str]) -> int:
+    rc = run_sdk_check(context_id)
+    if rc:
+        return rc
+    rc = run_command(
+        context_id,
+        "stage10c_target_plugin_build",
+        [sys.executable, str(SCRIPT_DIR / "remote_plugin_build.py"), context_id, *extra],
+        preserve_child_failure=True,
+    )
+    if rc:
+        return rc
+    return run_command(
+        context_id,
+        "stage11_plugin_verify",
+        [sys.executable, str(SCRIPT_DIR / "verify_plugin.py"), context_id],
+        preserve_child_failure=True,
+    )
+
+
+def run_deterministic_verify(context_id: str) -> int:
+    rc = env_check(context_id)
+    if rc:
+        return rc
+    rc = run_command(
+        context_id,
+        "stage4_functional_chain_check",
+        [sys.executable, str(SCRIPT_DIR / "functional_chain_check.py"), context_id, "--strict", "--check-only"],
+        preserve_child_failure=True,
+    )
+    if rc:
+        return rc
+    rc = run_sdk_check(context_id)
+    if rc:
+        return rc
+    return run_command(
+        context_id,
+        "stage11_plugin_verify",
+        [sys.executable, str(SCRIPT_DIR / "verify_plugin.py"), context_id],
+        preserve_child_failure=True,
+    )
+
+
+def run_verify(context_id: str) -> int:
+    rc = run_deterministic_verify(context_id)
+    if rc:
+        return rc
+    return run_command(
+        context_id,
+        "stage11d_human_approval",
+        [sys.executable, str(SCRIPT_DIR / "quality_gate.py"), "check", context_id],
+        preserve_child_failure=True,
+    )
+
+
+def run_approve(context_id: str, extra: list[str]) -> int:
+    approver = ""
+    for index, item in enumerate(extra):
+        if item == "--by" and index + 1 < len(extra):
+            approver = extra[index + 1]
+        elif item.startswith("--by="):
+            approver = item.split("=", 1)[1]
+    command = [sys.executable, str(SCRIPT_DIR / "quality_gate.py"), "approve", context_id]
+    if approver:
+        command.extend(["--by", approver])
+    return run_command(context_id, "stage11d_human_approval", command)
 
 
 def run_package(context_id: str) -> int:
     rc = env_check(context_id)
     if rc:
         return rc
+    rc = run_command(
+        context_id,
+        "stage4_functional_chain_check",
+        [sys.executable, str(SCRIPT_DIR / "functional_chain_check.py"), context_id, "--strict", "--check-only"],
+        preserve_child_failure=True,
+    )
+    if rc:
+        return rc
+    rc = run_deterministic_verify(context_id)
+    if rc:
+        return rc
+    rc = run_command(
+        context_id,
+        "stage11d_human_approval",
+        [sys.executable, str(SCRIPT_DIR / "quality_gate.py"), "check", context_id, "--require-approval"],
+        preserve_child_failure=True,
+    )
+    if rc:
+        return rc
     commands = [
-        ("stage12_package_manifest", [sys.executable, str(SCRIPT_DIR / "generate_runtime_files.py"), context_id]),
-        ("stage12_package_manifest", [sys.executable, str(SCRIPT_DIR / "package_by_manifest.py"), context_id]),
-        ("stage13_package_verify", [sys.executable, str(SCRIPT_DIR / "verify_package.py"), context_id]),
+        ("stage12_package_manifest", [sys.executable, str(SCRIPT_DIR / "package_plugin.py"), context_id]),
+        ("stage13_package_verify", [sys.executable, str(SCRIPT_DIR / "verify_plugin.py"), context_id]),
     ]
     for stage_name, command in commands:
         rc = run_command(context_id, stage_name, command)
@@ -645,29 +1012,22 @@ def run_package(context_id: str) -> int:
 
 
 def run_docker_package(context_id: str, extra: list[str]) -> int:
-    rc = env_check(context_id)
+    rc = run_package(context_id)
     if rc:
         return rc
-    rc = run_command(context_id, "stage12_package_manifest", [sys.executable, str(SCRIPT_DIR / "generate_runtime_files.py"), context_id])
-    if rc:
-        return rc
-    arch_stage = "stage15_docker_build_arm64"
-    if any(item in {"-x86", "--arch=amd64", "--arch=x86_64"} for item in extra):
-        arch_stage = "stage14_docker_build_x86_optional"
-    rc = run_command(context_id, arch_stage, ["bash", str(SCRIPT_DIR / "docker_package.sh"), context_id, *extra])
-    if rc:
-        return rc
-    marker("stage16_image_verify", "start")
-    marker("stage16_image_verify", "success")
-    checkpoint(context_id, "stage16_image_verify")
-    return 0
+    return run_command(
+        context_id,
+        "stage16_image_verify",
+        [sys.executable, str(SCRIPT_DIR / "runtime_image_check.py"), context_id, *extra],
+        preserve_child_failure=True,
+    )
 
 
 def run_deploy(context_id: str, extra: list[str]) -> int:
     rc = run_package(context_id)
     if rc:
         return rc
-    rc = run_command(context_id, "stage17_remote_transfer", ["bash", str(SCRIPT_DIR / "remote_deploy.sh"), context_id, *extra])
+    rc = run_command(context_id, "stage17_remote_transfer", [sys.executable, str(SCRIPT_DIR / "deploy_plugin.py"), context_id, *extra])
     if rc:
         return rc
     marker("stage18_remote_prepare", "start")
@@ -680,7 +1040,7 @@ def run_test(context_id: str, extra: list[str]) -> int:
     rc = env_check(context_id)
     if rc:
         return rc
-    rc = run_command(context_id, "stage21_remote_test", ["bash", str(SCRIPT_DIR / "remote_test.sh"), context_id, *extra])
+    rc = run_command(context_id, "stage21_remote_test", [sys.executable, str(SCRIPT_DIR / "test_plugin_remote.py"), context_id, *extra])
     if rc:
         return rc
     marker("stage22_collect_logs", "start")
@@ -696,10 +1056,7 @@ def run_loop(context_id: str, extra: list[str]) -> int:
     rc = run_package(context_id)
     if rc:
         return rc
-    rc = run_docker_package(context_id, extra)
-    if rc:
-        return rc
-    rc = run_command(context_id, "stage17_remote_transfer", ["bash", str(SCRIPT_DIR / "remote_deploy.sh"), context_id, *extra])
+    rc = run_command(context_id, "stage17_remote_transfer", [sys.executable, str(SCRIPT_DIR / "deploy_plugin.py"), context_id, *extra])
     if rc:
         return rc
     marker("stage18_remote_prepare", "start")
@@ -734,10 +1091,26 @@ def run_rerun(context_id: str, extra: list[str]) -> int:
 def dispatch(action: str, context_id: str, extra: list[str]) -> int:
     if action == "model":
         return run_model(context_id)
+    if action == "model-prep":
+        return run_model_prep(context_id, extra)
     if action == "adapt":
         return run_adapt(context_id, extra)
+    if action == "sdk-check":
+        return run_sdk_check(context_id)
+    if action == "sdk-package":
+        return run_sdk_package(context_id, extra)
+    if action == "target-sdk-package":
+        return run_target_sdk_package(context_id, extra)
+    if action == "plugin-build":
+        return run_plugin_build(context_id, extra)
+    if action == "target-plugin-build":
+        return run_target_plugin_build(context_id, extra)
     if action == "verify":
         return run_verify(context_id)
+    if action == "review":
+        return run_verify(context_id)
+    if action == "approve":
+        return run_approve(context_id, extra)
     if action == "package":
         return run_package(context_id)
     if action == "docker-package":
@@ -759,7 +1132,10 @@ def dispatch(action: str, context_id: str, extra: list[str]) -> int:
         rc = run_adapt(context_id, extra)
         if rc:
             return rc
-        return run_loop(context_id, extra)
+        rc = run_plugin_build(context_id, [item for item in extra if item == "--clean"])
+        if rc:
+            return rc
+        return run_verify(context_id)
     log_line(f"Unsupported action for stage_orchestrator.py: {action}", stream=sys.stderr)
     return 2
 

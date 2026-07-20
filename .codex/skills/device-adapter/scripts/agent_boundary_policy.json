@@ -15,15 +15,45 @@
       "write_allowlist": [
         "ops/contexts/{context_id}.context.md",
         "ops/contexts/{context_id}.manifest.json",
+        "ops/contexts/{context_id}.plugin_contract.json",
         "ops/artifacts/{context_id}.package_files.txt",
         "ops/artifacts/**"
       ],
       "write_denylist": ["src/**", "Dockerfile", "docker-compose.yml", "CMakeLists.txt"]
     },
+    "stage2_docs_extract": {
+      "agent": "extract_docs.py",
+      "write_allowlist": [
+        "ops/contexts/{context_id}.docs_inventory.json",
+        "ops/artifacts/docs/{context_id}/**",
+        "ops/artifacts/last_failure.json"
+      ],
+      "write_denylist": ["docs/**", "src/**", "Dockerfile", "docker-compose.yml", "CMakeLists.txt"]
+    },
     "stage4_capability_model": {
       "agent": "capability-modeler-agent",
       "write_allowlist": [
         "ops/contexts/{context_id}.device_spec.json",
+        "ops/contexts/{context_id}.plugin_contract.json",
+        "ops/artifacts/**"
+      ],
+      "write_denylist": ["src/**", "Dockerfile", "docker-compose.yml", "CMakeLists.txt"]
+    },
+    "stage4a_sdk_contract_prepare": {
+      "agent": "prepare_plugin_contract.py",
+      "write_allowlist": [
+        "ops/contexts/{context_id}.plugin_contract.json",
+        "ops/artifacts/**"
+      ],
+      "write_denylist": ["src/**", "adapter_plugins/**", "Dockerfile", "docker-compose.yml", "CMakeLists.txt"]
+    },
+    "stage4_functional_chain_check": {
+      "agent": "acceptance-planner-agent",
+      "write_allowlist": [
+        "ops/contexts/{context_id}.functional_chain.json",
+        "ops/contexts/{context_id}.dependency_checklist.json",
+        "ops/artifacts/{context_id}.dependency_gaps.md",
+        "ops/artifacts/{context_id}.functional_chain_check.json",
         "ops/artifacts/**"
       ],
       "write_denylist": ["src/**", "Dockerfile", "docker-compose.yml", "CMakeLists.txt"]
@@ -54,15 +84,15 @@
     "stage8_yaml_generate": {
       "agent": "yaml-writer-agent",
       "write_allowlist": [
-        "src/hardware_abstraction_layer/model/**",
-        "src/hardware_abstraction_layer/config/deployment.yaml",
+        "adapter_plugins/**",
         "ops/artifacts/**"
       ],
       "write_denylist": [
         "Dockerfile",
         "docker-compose.yml",
         "CMakeLists.txt",
-        "src/**/CMakeLists.txt",
+        "src/**",
+        "**/*.capability.yaml",
         "ops/contexts/{context_id}.device_spec.json"
       ],
       "diff_budget": {
@@ -73,14 +103,12 @@
     "stage10_adapter_codegen": {
       "agent": "hal-adapter-builder",
       "write_allowlist": [
-        "src/hardware_abstraction_layer/include/hardware_abstraction_layer/adapter/**",
-        "src/hardware_abstraction_layer/src/adapter/**",
-        "src/hardware_abstraction_layer/3rdparty/**",
-        "src/hardware_abstraction_layer/CMakeLists.txt",
-        "src/hardware_abstraction_layer/include/hardware_abstraction_layer/adapter/adapter_factory.hpp",
+        "adapter_plugins/**",
         "ops/artifacts/**"
       ],
       "write_denylist": [
+        "src/**",
+        "**/*.capability.yaml",
         "Dockerfile",
         "docker-compose.yml",
         "ops/contexts/{context_id}.device_spec.json"
@@ -90,13 +118,61 @@
         "max_changed_lines": 2000
       }
     },
-    "stage11_hal_registration_verify": {
-      "agent": "hal-registration-verifier-agent",
+    "stage6a_sdk_package": {
+      "agent": "sdk-packager-agent",
+      "write_allowlist": [
+        "build/**",
+        "ops/artifacts/**"
+      ],
+      "write_denylist": [
+        "src/**",
+        "adapter_plugins/**",
+        "ops/contexts/**",
+        "Dockerfile",
+        "docker-compose.yml"
+      ]
+    },
+    "stage6a_target_hal_build": {
+      "agent": "sdk-packager-agent",
+      "write_allowlist": ["build/**", "ops/artifacts/**"],
+      "write_denylist": ["src/**", "adapter_plugins/**", "ops/contexts/**", "Dockerfile", "docker-compose.yml"]
+    },
+    "stage6a_sdk_check": {
+      "agent": "sdk-dependency-auditor-agent",
+      "write_allowlist": [
+        "ops/contexts/{context_id}.sdk_inventory.json",
+        "ops/artifacts/{context_id}.sdk_check.json",
+        "ops/artifacts/**"
+      ],
+      "write_denylist": ["src/**", "adapter_plugins/**", "Dockerfile", "docker-compose.yml"]
+    },
+    "stage6b_sdk_validate": {
+      "agent": "sdk-packager-agent",
       "write_allowlist": ["ops/artifacts/**"],
+      "write_denylist": ["src/**", "adapter_plugins/**", "build/**", "ops/contexts/**", "Dockerfile", "docker-compose.yml"]
+    },
+    "stage10c_plugin_build": {
+      "agent": "plugin-builder-agent",
+      "write_allowlist": ["build/**", "ops/artifacts/**"],
+      "write_denylist": ["src/**", "adapter_plugins/**", "ops/contexts/**", "Dockerfile", "docker-compose.yml"]
+    },
+    "stage10c_target_plugin_build": {
+      "agent": "plugin-builder-agent",
+      "write_allowlist": ["build/**", "ops/artifacts/**"],
+      "write_denylist": ["src/**", "adapter_plugins/**", "ops/contexts/**", "Dockerfile", "docker-compose.yml"]
+    },
+    "stage11_plugin_verify": {
+      "agent": "verification-agent",
+      "write_allowlist": ["ops/artifacts/**"],
+      "write_denylist": ["src/**", "adapter_plugins/**", "build/**", "ops/contexts/**"]
+    },
+    "stage10a_tdd_evidence": {
+      "agent": "hal-adapter-builder",
+      "write_allowlist": ["ops/artifacts/{context_id}.tdd_report.json", "ops/artifacts/**"],
       "write_denylist": ["src/**", "Dockerfile", "docker-compose.yml", "ops/contexts/**"]
     },
-    "stage12_package_manifest": {
-      "agent": "package-builder",
+    "stage10b_runtime_materialize": {
+      "agent": "device-adapter-runtime",
       "write_allowlist": [
         "Dockerfile",
         "docker-compose.yml",
@@ -111,7 +187,32 @@
         "ops/contexts/{context_id}.manifest.json",
         "ops/artifacts/**"
       ],
-      "write_denylist": ["src/hardware_abstraction_layer/src/adapter/**"]
+      "write_denylist": ["src/**"]
+    },
+    "stage11a_independent_verification": {
+      "agent": "verification-agent",
+      "write_allowlist": ["ops/artifacts/**"],
+      "write_denylist": ["src/**", "Dockerfile", "docker-compose.yml", "ops/contexts/**"]
+    },
+    "stage11b_cpp_review": {
+      "agent": "verification-agent",
+      "write_allowlist": ["ops/artifacts/**"],
+      "write_denylist": ["src/**", "Dockerfile", "docker-compose.yml", "ops/contexts/**"]
+    },
+    "stage11c_differential_review": {
+      "agent": "verification-agent",
+      "write_allowlist": ["ops/artifacts/**"],
+      "write_denylist": ["src/**", "Dockerfile", "docker-compose.yml", "ops/contexts/**"]
+    },
+    "stage11d_human_approval": {
+      "agent": "human",
+      "write_allowlist": ["ops/artifacts/{context_id}.human_approval.json", "ops/artifacts/{context_id}.quality_gate_report.json", "ops/artifacts/**"],
+      "write_denylist": ["src/**", "Dockerfile", "docker-compose.yml", "ops/contexts/**"]
+    },
+    "stage12_package_manifest": {
+      "agent": "package-builder",
+      "write_allowlist": ["ops/artifacts/**"],
+      "write_denylist": ["src/**", "ops/contexts/**", "Dockerfile", "docker-compose.yml", ".dockerignore", "run.sh", "config.env", "install.sh", "status.sh", "view.sh", "DEPLOY.md"]
     },
     "stage13_package_verify": {
       "agent": "package-builder",

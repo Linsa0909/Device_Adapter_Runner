@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -u
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 stage() {
   local name="$1"
   local status="$2"
@@ -79,6 +81,16 @@ if ! command -v docker >/dev/null 2>&1; then
   fail_json stage0_env_check 3 "docker command not found"
   exit 3
 fi
+if ! docker info >/dev/null 2>&1; then
+  stage stage0_env_check fail 3
+  fail_json stage0_env_check 3 "Docker daemon is unavailable. Start Docker Engine or enable Docker Desktop WSL integration, then verify with: docker info"
+  exit 3
+fi
+if ! docker buildx version >/dev/null 2>&1; then
+  stage stage0_env_check fail 3
+  fail_json stage0_env_check 3 "Docker buildx is required for architecture-targeted image builds. Install/enable the Docker buildx plugin, then verify with: docker buildx version"
+  exit 3
+fi
 stage stage0_env_check success
 
 dockerfile="$(python3 - "$manifest" <<'PY'
@@ -88,14 +100,9 @@ print((m.get("docker") or {}).get("dockerfile") or "Dockerfile")
 PY
 )"
 if [ ! -f "$dockerfile" ]; then
-  if [ -f ".codex/skills/device-adapter/scripts/generate_runtime_files.py" ]; then
-    python3 .codex/skills/device-adapter/scripts/generate_runtime_files.py "$context_id" || exit $?
-  fi
-  if [ ! -f "$dockerfile" ]; then
-    stage stage4_docker_package fail 4
-    fail_json stage4_docker_package 4 "Dockerfile not found: $dockerfile"
-    exit 4
-  fi
+  stage stage4_docker_package fail 4
+  fail_json stage4_docker_package 4 "Dockerfile not materialized before approval: $dockerfile. Rerun /device-adapter adapt $context_id, review, and approve."
+  exit 4
 fi
 
 if [ -z "$arch" ]; then
@@ -113,7 +120,7 @@ case "$arch" in
   *) platform="$arch"; suffix="$(echo "$arch" | tr '/:' '__')" ;;
 esac
 
-python3 .codex/skills/device-adapter/scripts/verify_native_deps.py "$context_id" --arch "$suffix" --strict || exit $?
+python3 "$script_dir/verify_native_deps.py" "$context_id" --arch "$suffix" --strict || exit $?
 
 image="$(python3 - "$manifest" <<'PY'
 import json, sys
@@ -133,11 +140,7 @@ mkdir -p ops/artifacts
 mkdir -p ops/artifacts/logs
 build_log="ops/artifacts/logs/${context_id}_docker_build_${suffix}.log"
 
-if docker buildx version >/dev/null 2>&1; then
-  build_cmd=(docker buildx build --platform "$platform" --load -t "${image}:${tag}" -f "$dockerfile" .)
-else
-  build_cmd=(docker build -t "${image}:${tag}" -f "$dockerfile" .)
-fi
+build_cmd=(docker buildx build --platform "$platform" --load -t "${image}:${tag}" -f "$dockerfile" .)
 
 printf 'build_command:'
 printf ' %q' "${build_cmd[@]}"
@@ -224,7 +227,7 @@ PY
     echo "smoke_skip_report: $skip_report"
     stage stage8_container_smoke_test success
   else
-    bash .codex/skills/device-adapter/scripts/docker_smoke_test.sh "$context_id" "${image}:${tag}" "$suffix" || exit $?
+    bash "$script_dir/docker_smoke_test.sh" "$context_id" "${image}:${tag}" "$suffix" || exit $?
   fi
 else
   stage stage8_container_smoke_test start

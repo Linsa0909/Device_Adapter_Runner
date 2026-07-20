@@ -1,157 +1,243 @@
 #!/usr/bin/env python3
+"""Generate the deterministic skeleton of an independent HAL Adapter plugin."""
+
+from __future__ import annotations
+
 import argparse
 import json
-import re
 from pathlib import Path
+from typing import Any
+
+from plugin_common import contract_errors, load_contract, missing_contract_fields, plugin_source_dir
 
 
-HAL_ROOT = Path("src/hardware_abstraction_layer")
-MODEL_ROOT = HAL_ROOT / "model"
-CONFIG_PATH = HAL_ROOT / "config" / "deployment.yaml"
-
-
-def stage(name, status, exit_code=None):
+def stage(name: str, status: str, exit_code: int | None = None) -> None:
     suffix = f" exit_code={exit_code}" if exit_code is not None else ""
     print(f"[AGENT_STAGE] stage={name} status={status}{suffix}")
 
 
-def write_failure(stage_name, command, exit_code, message, **extra):
-    out = Path("ops/artifacts/last_failure.json")
-    out.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"stage": stage_name, "command": command, "exit_code": exit_code, "message": message}
-    payload.update(extra)
-    out.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+def write_failure(context_id: str, code: int, message: str) -> None:
+    path = Path("ops/artifacts/last_failure.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "schema_version": "1.0", "context_id": context_id,
+        "stage": "stage8_yaml_generate", "owner_agent": "yaml-writer-agent",
+        "status": "fail", "exit_code": code, "error_code": "PLUGIN_ADAPT_CONTRACT_INVALID",
+        "message": message, "next_action": f"Complete model and plugin contract for {context_id}",
+    }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def slug(value):
-    value = value.strip().lower().replace("-", "_")
-    value = re.sub(r"[^a-z0-9_]+", "_", value)
-    return re.sub(r"_+", "_", value).strip("_") or "device"
-
-
-def read_context(context_id):
-    path = Path(f"ops/contexts/{context_id}.context.md")
-    if not path.exists():
-        raise FileNotFoundError(path)
-    return path.read_text(encoding="utf-8")
-
-
-def load_spec(context_id):
+def load_spec(context_id: str) -> dict[str, Any]:
     path = Path(f"ops/contexts/{context_id}.device_spec.json")
-    if not path.exists():
-        return None
+    if not path.is_file():
+        raise FileNotFoundError(f"device spec not found: {path}")
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def yaml_scalar(value):
+def yaml_scalar(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     if value is None:
         return '""'
     if isinstance(value, (int, float)):
         return str(value)
-    text = str(value).replace('"', '\\"')
-    return f'"{text}"'
+    return '"' + str(value).replace('"', '\\"') + '"'
 
 
-def to_yaml(value, indent=0):
+def to_yaml(value: Any, indent: int = 0) -> str:
     pad = " " * indent
     if isinstance(value, dict):
-        if not value:
-            return f"{pad}{{}}"
-        lines = []
+        lines: list[str] = []
         for key, item in value.items():
-            if item == []:
+            if isinstance(item, (dict, list)) and item:
+                lines.extend((f"{pad}{key}:", to_yaml(item, indent + 2)))
+            elif item == []:
                 lines.append(f"{pad}{key}: []")
             elif item == {}:
                 lines.append(f"{pad}{key}: {{}}")
-            elif isinstance(item, (dict, list)):
-                lines.append(f"{pad}{key}:")
-                lines.append(to_yaml(item, indent + 2))
             else:
                 lines.append(f"{pad}{key}: {yaml_scalar(item)}")
         return "\n".join(lines)
     if isinstance(value, list):
-        if not value:
-            return f"{pad}[]"
         lines = []
         for item in value:
             if isinstance(item, (dict, list)):
-                lines.append(f"{pad}-")
-                lines.append(to_yaml(item, indent + 2))
+                lines.extend((f"{pad}-", to_yaml(item, indent + 2)))
             else:
                 lines.append(f"{pad}- {yaml_scalar(item)}")
         return "\n".join(lines)
     return f"{pad}{yaml_scalar(value)}"
 
 
-def infer_fields(context_id, text, spec=None):
-    adapter_type = slug(context_id)
-    spec = spec or {}
-    if spec.get("adapter_type"):
-        adapter_type = slug(spec["adapter_type"])
-    m = re.search(r"adapter_type\s*[:=]+\s*([A-Za-z0-9_-]+)", text)
-    if m:
-        adapter_type = slug(m.group(1))
-    elif re.search(r"\bmino17\b", text, re.I):
-        adapter_type = "mino17"
-    capability_id = adapter_type
-    if re.search(r"infrared|红外|thermal", text, re.I):
-        capability_id = "infrared_camera"
-    elif re.search(r"gimbal|云台", text, re.I):
-        capability_id = "gimbal"
-    elif re.search(r"camera|相机|摄像", text, re.I):
-        capability_id = "camera"
-
-    manufacturer = ""
-    model = context_id
-    if isinstance(spec.get("device"), dict):
-        manufacturer = spec["device"].get("manufacturer", manufacturer)
-        model = spec["device"].get("model", model)
-    if isinstance(spec.get("capability"), dict) and spec["capability"].get("id"):
-        capability_id = slug(spec["capability"]["id"])
-    m = re.search(r"(?:manufacturer|厂商|厂家|制造商)\s*(?:是|为|:|：)?\s*([^\n，,。]+)", text, re.I)
-    if m:
-        manufacturer = m.group(1).strip()
-    m = re.search(r"(?:model|型号|设备型号)\s*(?:是|为|:|：)?\s*([^\n，,。]+)", text, re.I)
-    if m:
-        model = m.group(1).strip()
-
-    device_path = "/dev/infrared_camera" if capability_id == "infrared_camera" else ""
-    paths = re.findall(r"/dev/[A-Za-z0-9_.-]+", text)
-    if paths:
-        device_path = paths[0]
-    if isinstance(spec.get("connection"), dict) and spec["connection"].get("device_path"):
-        device_path = spec["connection"]["device_path"]
-
-    output_url = "rtmp://127.0.0.1:1935/ghostapp/uav0"
-    m = re.search(r"(rtmp://[^\s，,。]+)", text, re.I)
-    if m:
-        output_url = m.group(1).strip()
-    if isinstance(spec.get("connection"), dict) and spec["connection"].get("output_url"):
-        output_url = spec["connection"]["output_url"]
-
-    protocol = "device_node" if device_path else "custom"
-    if re.search(r"udp", text, re.I):
-        protocol = "udp"
-    elif re.search(r"serial|串口", text, re.I):
-        protocol = "serial"
-    if isinstance(spec.get("connection"), dict) and spec["connection"].get("protocol"):
-        protocol = spec["connection"]["protocol"]
-
-    return {
-        "adapter_type": adapter_type,
-        "capability_id": capability_id,
-        "manufacturer": manufacturer,
-        "model": model,
-        "device_path": device_path,
-        "output_url": output_url,
-        "protocol": protocol,
-        "spec": spec,
-    }
+def class_name(adapter: str) -> str:
+    return "".join(part.capitalize() for part in adapter.split("_")) + "Adapter"
 
 
-def write_if_missing(path, content, force=False):
+def render_cmake(contract: dict[str, Any]) -> str:
+    adapter = contract["adapter_type"]
+    return f'''cmake_minimum_required(VERSION 3.16)
+project(hal_{adapter}_adapter_plugin LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+set(CMAKE_VISIBILITY_INLINES_HIDDEN YES)
+set(HAL_ADAPTER_SDK_ROOT "" CACHE PATH "Path to the immutable HAL Adapter SDK")
+if(NOT HAL_ADAPTER_SDK_ROOT)
+  message(FATAL_ERROR "Set -DHAL_ADAPTER_SDK_ROOT=/path/to/hal_adapter_sdk")
+endif()
+include("${{HAL_ADAPTER_SDK_ROOT}}/cmake/HalAdapterSdkConfig.cmake")
+hal_adapter_sdk_require_abi({contract["sdk_abi"]})
+
+add_library(hal_adapter_{adapter} SHARED
+  src/{adapter}_adapter.cpp
+  src/{adapter}_plugin.cpp
+)
+target_include_directories(hal_adapter_{adapter} PRIVATE "${{CMAKE_CURRENT_SOURCE_DIR}}/include")
+target_link_libraries(hal_adapter_{adapter} PRIVATE HAL::model HAL::media)
+set_target_properties(hal_adapter_{adapter} PROPERTIES
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN YES
+  OUTPUT_NAME "hal_adapter_{adapter}"
+  BUILD_RPATH "${{HAL_ADAPTER_SDK_PLATFORM_LIB_DIR}}"
+  INSTALL_RPATH "$ORIGIN/../deps"
+)
+install(TARGETS hal_adapter_{adapter} LIBRARY DESTINATION adapters)
+install(FILES config/{adapter}.json DESTINATION config)
+install(FILES model/devices/{adapter}.device.yaml DESTINATION model/devices)
+install(FILES README.md DESTINATION .)
+'''
+
+
+def render_header(contract: dict[str, Any]) -> str:
+    adapter = contract["adapter_type"]
+    cls = class_name(adapter)
+    return f'''#pragma once
+#include "hardware_abstraction_layer/adapter/adapter_interface.hpp"
+#include <functional>
+#include <string>
+#include <unordered_set>
+
+namespace hal::adapters::{adapter} {{
+class {cls} final : public IDeviceAdapter {{
+public:
+    ~{cls}() override;
+    bool connect(const ConnectionConfig& config) override;
+    void disconnect() override;
+    bool isConnected() const override;
+    ConnectionState getConnectionState() const override;
+    AdapterHealth getHealth() const override;
+    AdapterStats getStats() const override;
+    DeviceInfo getDeviceInfo() const override;
+    bool hasCapability(const std::string& capability) const override;
+    std::unordered_set<std::string> getCapabilities() const override;
+    void onConnectionStateChanged(std::function<void(ConnectionState)> callback) override;
+    void onHealthChanged(std::function<void(AdapterHealth)> callback) override;
+    void bindToEntity(hal::model::DeviceEntity& entity) override;
+    void registerFastTelemetryCallback(const std::string& key, FastTelemetryCallback callback) override;
+    bool pushFastCommand(const std::string& key, const std::any& command) override;
+private:
+    bool connected_ = false;
+    ConnectionConfig config_;
+    AdapterStats stats_;
+    std::function<void(ConnectionState)> connection_callback_;
+    std::function<void(AdapterHealth)> health_callback_;
+}};
+}}  // namespace hal::adapters::{adapter}
+'''
+
+
+def render_adapter(contract: dict[str, Any]) -> str:
+    adapter = contract["adapter_type"]
+    cls = class_name(adapter)
+    groups = ", ".join(f'"{item}"' for item in contract["capability_group_refs"])
+    return f'''#include "{adapter}/{adapter}_adapter.hpp"
+#include <utility>
+
+namespace hal::adapters::{adapter} {{
+{cls}::~{cls}() {{ disconnect(); }}
+bool {cls}::connect(const ConnectionConfig& config)
+{{
+    config_ = config;
+    // Fail closed until the Agent implements and tests the documented transport.
+    connected_ = false;
+    return false;
+}}
+void {cls}::disconnect() {{ connected_ = false; if (connection_callback_) connection_callback_(ConnectionState::Disconnected); }}
+bool {cls}::isConnected() const {{ return connected_; }}
+ConnectionState {cls}::getConnectionState() const {{ return connected_ ? ConnectionState::Connected : ConnectionState::Disconnected; }}
+AdapterHealth {cls}::getHealth() const {{ return connected_ ? AdapterHealth::Healthy : AdapterHealth::Unknown; }}
+AdapterStats {cls}::getStats() const {{ return stats_; }}
+DeviceInfo {cls}::getDeviceInfo() const {{ DeviceInfo info; info.manufacturer = "{contract["vendor"]}"; info.model = "{adapter}"; return info; }}
+bool {cls}::hasCapability(const std::string& value) const {{ return getCapabilities().count(value) != 0; }}
+std::unordered_set<std::string> {cls}::getCapabilities() const {{ return {{{groups}}}; }}
+void {cls}::onConnectionStateChanged(std::function<void(ConnectionState)> value) {{ connection_callback_ = std::move(value); }}
+void {cls}::onHealthChanged(std::function<void(AdapterHealth)> value) {{ health_callback_ = std::move(value); }}
+void {cls}::bindToEntity(hal::model::DeviceEntity& value) {{ (void)value; }}
+void {cls}::registerFastTelemetryCallback(const std::string& key, FastTelemetryCallback value) {{ (void)key; (void)value; }}
+bool {cls}::pushFastCommand(const std::string& key, const std::any& value) {{ (void)key; (void)value; return false; }}
+}}  // namespace hal::adapters::{adapter}
+'''
+
+
+def render_entry(contract: dict[str, Any]) -> str:
+    adapter = contract["adapter_type"]
+    cls = class_name(adapter)
+    return f'''#include "{adapter}/{adapter}_adapter.hpp"
+#include "hardware_abstraction_layer/adapter/plugin_sdk/adapter_plugin_api.hpp"
+#include <cstdint>
+#include <string>
+
+namespace {{
+std::size_t typeCount() {{ return 1; }}
+const char* typeAt(std::size_t index) {{ return index == 0 ? "{adapter}" : nullptr; }}
+bool supports(const char* type) {{ return type && std::string(type) == "{adapter}"; }}
+hal::adapters::IDeviceAdapter* create(const char* type) {{ return supports(type) ? new hal::adapters::{adapter}::{cls}() : nullptr; }}
+void destroy(hal::adapters::IDeviceAdapter* value) {{ delete value; }}
+}}
+extern "C" std::uint32_t hal_get_adapter_sdk_abi_v1() {{ return hal::adapters::plugin_sdk::kAdapterSdkAbiVersion; }}
+extern "C" const hal::adapters::plugin_sdk::AdapterPluginApiV1* hal_get_adapter_plugin_v1()
+{{
+    static const hal::adapters::plugin_sdk::AdapterPluginApiV1 api{{
+        {contract["plugin_abi"]}, "{contract["vendor"]}.{adapter}", "{contract["vendor"]}", "{contract["plugin_version"]}",
+        &typeCount, &typeAt, &supports, &create, &destroy,
+    }};
+    return &api;
+}}
+'''
+
+
+def render_readme(contract: dict[str, Any]) -> str:
+    return f'''# {contract["adapter_type"]} HAL Adapter Plugin
+
+- Plugin version: `{contract["plugin_version"]}`
+- HAL Adapter SDK / ABI: `{contract["sdk_version"]}` / `{contract["sdk_abi"]}`
+- Plugin ABI: `{contract["plugin_abi"]}`
+- Target: `{contract["target_arch"]}` / `{contract["target_platform"]}`
+- Runtime image: `{contract["runtime_image"]}`
+- Platform capability groups: `{", ".join(contract["capability_group_refs"])}`
+- Multi-instance: required
+
+Complete transport, private dependencies, hardware requirements, instance
+resource allocation, healthchecks, known limitations, and upgrade notes from
+device evidence before release.
+'''
+
+
+def render_private_config(contract: dict[str, Any], spec: dict[str, Any]) -> str:
+    declared = contract.get("private_config") or {}
+    payload = spec.get("private_config")
+    if not isinstance(payload, dict):
+        payload = {
+            "schema_version": str(declared.get("schema_version") or "1.0"),
+            "instances": [],
+        }
+    payload.setdefault("schema_version", str(declared.get("schema_version") or "1.0"))
+    payload.setdefault("instances", [])
+    return json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+
+
+def write_output(path: Path, content: str, force: bool) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists() and not force:
         return False
@@ -159,260 +245,63 @@ def write_if_missing(path, content, force=False):
     return True
 
 
-def render_capability(fields):
-    spec_capability = (fields.get("spec") or {}).get("capability")
-    if isinstance(spec_capability, dict):
-        capability = dict(spec_capability)
-        capability.setdefault("id", fields["capability_id"])
-        capability.setdefault("name", fields["capability_id"].replace("_", " ").title())
-        capability.setdefault("version", "1.0")
-        return "# Generated by device-adapter from device_spec.json.\n" + to_yaml(capability) + "\n"
-
-    cap = fields["capability_id"]
-    title = cap.replace("_", " ").title()
-    return f"""# Generated by device-adapter from natural language context.
-id: {cap}
-name: "{title}"
-description: "{title} capability model generated for HAL adapter {fields['adapter_type']}"
-version: "1.0"
-
-properties:
-  - id: connection_state
-    name: "Connection State"
-    required: true
-    access: read_only
-    spec:
-      type: enum
-      enum_values:
-        - {{ key: "disconnected", label: "Disconnected", int_value: 0 }}
-        - {{ key: "connecting", label: "Connecting", int_value: 1 }}
-        - {{ key: "connected", label: "Connected", int_value: 2 }}
-        - {{ key: "error", label: "Error", int_value: 3 }}
-  - id: health
-    name: "Health"
-    required: true
-    access: read_only
-    spec:
-      type: enum
-      enum_values:
-        - {{ key: "unknown", label: "Unknown", int_value: 0 }}
-        - {{ key: "healthy", label: "Healthy", int_value: 1 }}
-        - {{ key: "degraded", label: "Degraded", int_value: 2 }}
-        - {{ key: "unhealthy", label: "Unhealthy", int_value: 3 }}
-
-services:
-  - id: start
-    name: "Start"
-    required: false
-    is_async: false
-    input_params: []
-    output_params:
-      - id: success
-        spec: {{ type: bool }}
-      - id: message
-        spec: {{ type: string }}
-  - id: stop
-    name: "Stop"
-    required: false
-    is_async: false
-    input_params: []
-    output_params:
-      - id: success
-        spec: {{ type: bool }}
-      - id: message
-        spec: {{ type: string }}
-
-events:
-  - id: device_error
-    name: "Device Error"
-    trigger: event
-    enabled: true
-    output_params:
-      - id: error_code
-        spec: {{ type: int32 }}
-      - id: message
-        spec: {{ type: string }}
-"""
-
-
-def render_device(fields):
-    spec_model = (fields.get("spec") or {}).get("device_model")
-    if isinstance(spec_model, dict):
-        model = dict(spec_model)
-        model.setdefault("schema_version", "2.0")
-        model.setdefault("profile", {})
-        model["profile"].setdefault("adapter_type", fields["adapter_type"])
-        model.setdefault("capability_groups", [{"group_id": fields["capability_id"], "enabled": True}])
-        return "# Generated by device-adapter from device_spec.json.\n" + to_yaml(model) + "\n"
-
-    connection_extra = ""
-    if fields["device_path"]:
-        connection_extra += f'  address: "{fields["device_path"]}"\n'
-    if fields["output_url"]:
-        connection_extra += f'  output_url: "{fields["output_url"]}"\n'
-    return f"""# Generated by device-adapter from natural language context.
-schema_version: "2.0"
-
-profile:
-  manufacturer: "{fields['manufacturer']}"
-  model: "{fields['model']}"
-  adapter_type: "{fields['adapter_type']}"
-  protocol: "{fields['protocol']}"
-  firmware_version: ""
-  hardware_version: ""
-  serial_number: ""
-
-connection:
-  transport: "{fields['protocol']}"
-{connection_extra}  command_timeout_ms: 1000
-  heartbeat_interval_ms: 500
-  auto_reconnect: true
-  max_reconnect_attempts: 5
-
-capability_groups:
-  - group_id: {fields['capability_id']}
-    enabled: true
-    property_overrides: {{}}
-    service_overrides: {{}}
-    event_overrides: {{}}
-"""
-
-
-def deployment_entry(fields):
-    spec_deployment = (fields.get("spec") or {}).get("deployment_entry")
-    if isinstance(spec_deployment, dict):
-        entry = dict(spec_deployment)
-        entry.setdefault("adapter_type", fields["adapter_type"])
-        entry.setdefault("instance_index", 0)
-        entry.setdefault("enabled", True)
-        return to_yaml([entry], 4).rstrip() + "\n"
-
-    lines = [
-        f"    - adapter_type: {fields['adapter_type']}",
-        "      instance_index: 0",
-        f'      device_name: "{fields["model"]}"',
-        "      enabled: true",
-        "      connection:",
-        f"        protocol: {fields['protocol']}",
-    ]
-    if fields["device_path"]:
-        lines.append(f'        port: "{fields["device_path"]}"')
-    lines.extend(["      params:"])
-    if fields["device_path"]:
-        lines.append(f'        camera_device: "{fields["device_path"]}"')
-    if fields["output_url"]:
-        lines.append(f'        output_url: "{fields["output_url"]}"')
-    return "\n".join(lines) + "\n"
-
-
-def update_deployment(fields, force=False):
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if not CONFIG_PATH.exists():
-        CONFIG_PATH.write_text(
-            'deployment:\n  version: "1.0"\n  namespace: "/hal/device"\n  devices:\n'
-            + deployment_entry(fields),
-            encoding="utf-8",
-        )
-        return True
-    text = CONFIG_PATH.read_text(encoding="utf-8")
-    if re.search(rf"adapter_type:\s*{re.escape(fields['adapter_type'])}\b", text) and not force:
-        return False
-    if "  devices:" not in text:
-        text = text.rstrip() + "\n  devices:\n"
-    text = text.rstrip() + "\n" + deployment_entry(fields)
-    CONFIG_PATH.write_text(text, encoding="utf-8")
-    return True
-
-
-def adapter_exists(adapter_type):
-    return any((HAL_ROOT / "src" / "adapter").glob(f"**/{adapter_type}*")) or any(
-        (HAL_ROOT / "include" / "hardware_abstraction_layer" / "adapter").glob(f"**/{adapter_type}*")
-    )
-
-
-def write_gap_report(context_id, fields, created):
-    report = Path(f"ops/artifacts/{context_id}.adapter_gaps.md")
-    report.parent.mkdir(parents=True, exist_ok=True)
-    exists = adapter_exists(fields["adapter_type"])
-    requirements = (fields.get("spec") or {}).get("adapter_requirements") or {}
-    content = [
-        f"# Adapter Gap Report: {context_id}",
-        "",
-        f"- adapter_type: `{fields['adapter_type']}`",
-        f"- capability_id: `{fields['capability_id']}`",
-        f"- adapter_code_exists: `{str(exists).lower()}`",
-        "",
-        "## Generated Or Updated",
-    ]
-    content.extend(f"- `{item}`" for item in created)
-    content.extend([
-        "",
-        "## Adapter Requirements",
-        "",
-        f"- apt_build: `{requirements.get('apt_build') or requirements.get('apt_packages') or []}`",
-        f"- apt_runtime: `{requirements.get('apt_runtime') or requirements.get('apt_packages') or []}`",
-        f"- sdk_headers: `{requirements.get('sdk_headers') or []}`",
-        f"- sdk_libraries: `{requirements.get('sdk_libraries') or []}`",
-        f"- protocol_files: `{requirements.get('protocol_files') or []}`",
-        f"- subprocesses: `{requirements.get('subprocesses') or []}`",
-        "",
-        "## Remaining Work",
-    ])
-    if not exists:
-        content.extend([
-            "- Add adapter header/source under `include/hardware_abstraction_layer/adapter/<adapter>/` and `src/adapter/<adapter>/`.",
-            "- Register the adapter in `adapter_factory.hpp`.",
-            "- Add the adapter target and source list in `hardware_abstraction_layer/CMakeLists.txt`.",
-            "- Add protocol parser/transport implementation from the device documentation.",
-            "- Add required SDK headers/libraries under `3rdparty/` with architecture-specific directories when needed.",
-        ])
-    else:
-        content.append("- Adapter code already exists. Verify protocol behavior and hardware runtime logs.")
-    report.write_text("\n".join(content) + "\n", encoding="utf-8")
-    return report
-
-
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("context_id")
     parser.add_argument("--force", action="store_true")
-    args = parser.parse_args()
-    command = "adapt_hal_device.py " + args.context_id
-
-    stage("stage2_context_validate", "start")
-    if not (HAL_ROOT / "package.xml").exists():
-        stage("stage2_context_validate", "fail", 2)
-        write_failure("stage2_context_validate", command, 2, "Run from HAL ROS2 workspace root; src/hardware_abstraction_layer/package.xml not found.")
-        return 2
+    args, _ = parser.parse_known_args()
+    stage("stage8_yaml_generate", "start")
     try:
-        context = read_context(args.context_id)
-    except FileNotFoundError as exc:
-        stage("stage2_context_validate", "fail", 3)
-        write_failure("stage2_context_validate", command, 3, f"Context not found: {exc}", next_action=f"/device-adapter context {args.context_id}")
-        return 3
-    spec = load_spec(args.context_id)
-    stage("stage2_context_validate", "success")
+        contract = load_contract(args.context_id)
+        missing = missing_contract_fields(contract)
+        invalid = contract_errors(contract)
+        if missing or invalid:
+            raise ValueError("invalid plugin contract: " + ", ".join(missing + invalid))
+        spec = load_spec(args.context_id)
+        adapter = str(contract["adapter_type"])
+        if spec.get("adapter_type") != adapter:
+            raise ValueError("device_spec.adapter_type must match plugin contract")
+        model = spec.get("device_model")
+        if not isinstance(model, dict):
+            raise ValueError("device_spec.device_model is required")
+        model.setdefault("schema_version", "2.0")
+        model.setdefault("profile", {})["adapter_type"] = adapter
+        refs = [item.get("group_id") for item in model.get("capability_groups", []) if isinstance(item, dict)]
+        expected = list(contract["capability_group_refs"])
+        if len(refs) != len(expected) or set(refs) != set(expected):
+            raise ValueError("device model must reference exactly the contract capability groups")
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        write_failure(args.context_id, 8, str(exc))
+        stage("stage8_yaml_generate", "fail", 8)
+        return 8
 
-    stage("stage3_hal_adapt", "start")
-    fields = infer_fields(args.context_id, context, spec)
-    cap_path = MODEL_ROOT / "capability_groups" / f"{fields['capability_id']}.capability.yaml"
-    dev_path = MODEL_ROOT / "devices" / f"{fields['adapter_type']}.device.yaml"
-    created = []
-    if write_if_missing(cap_path, render_capability(fields), args.force):
-        created.append(cap_path.as_posix())
-    if write_if_missing(dev_path, render_device(fields), args.force):
-        created.append(dev_path.as_posix())
-    if update_deployment(fields, args.force):
-        created.append(CONFIG_PATH.as_posix())
-    report = write_gap_report(args.context_id, fields, created)
-    print(f"adapter_type: {fields['adapter_type']}")
-    print(f"capability_id: {fields['capability_id']}")
-    if spec:
-        print(f"device_spec: ops/contexts/{args.context_id}.device_spec.json")
-    print(f"gap_report: {report}")
-    for item in created:
-        print(f"generated_or_updated: {item}")
-    stage("stage3_hal_adapt", "success")
+    root = plugin_source_dir(contract)
+    outputs = {
+        root / "CMakeLists.txt": render_cmake(contract),
+        root / "README.md": render_readme(contract),
+        root / f"include/{adapter}/{adapter}_adapter.hpp": render_header(contract),
+        root / f"src/{adapter}_adapter.cpp": render_adapter(contract),
+        root / f"src/{adapter}_plugin.cpp": render_entry(contract),
+        root / f"config/{adapter}.json": render_private_config(contract, spec),
+        root / f"model/devices/{adapter}.device.yaml": "# References platform-owned capability groups.\n" + to_yaml(model) + "\n",
+    }
+    changed = [path for path, content in outputs.items() if write_output(path, content, args.force)]
+    generated = Path(f"ops/artifacts/{args.context_id}.generated_files.txt")
+    generated.parent.mkdir(parents=True, exist_ok=True)
+    generated.write_text("\n".join(sorted(path.as_posix() for path in outputs)) + "\n", encoding="utf-8")
+    gaps = Path(f"ops/artifacts/{args.context_id}.adapter_gaps.md")
+    gaps.write_text(
+        f"# Runtime Plugin Gaps: {args.context_id}\n\n"
+        "- Generated transport is intentionally fail-closed.\n"
+        "- Implement documented transport/protocol/HAL behavior with TDD.\n"
+        "- Materialize private dependencies and two-instance tests.\n"
+        "- Do not modify platform capability groups, Factory, Registry, or main CMake.\n",
+        encoding="utf-8",
+    )
+    print(f"plugin_source: {root}")
+    for path in changed:
+        print(f"generated_or_updated: {path}")
+    stage("stage8_yaml_generate", "success")
     return 0
 
 
