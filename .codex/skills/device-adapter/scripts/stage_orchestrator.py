@@ -243,6 +243,30 @@ STAGES: dict[str, Stage] = {
 }
 
 
+def load_workflow_stages() -> dict[str, Stage]:
+    """Load v5 stage ownership and outputs from the single workflow contract."""
+    path = SCRIPT_DIR / "workflow_definition.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    definitions = payload.get("stages")
+    if not isinstance(definitions, dict):
+        raise RuntimeError("workflow_definition.json must contain a stages object")
+    result: dict[str, Stage] = {}
+    for name, item in definitions.items():
+        dependencies = item.get("depends_on", [])
+        if not isinstance(dependencies, list) or any(value not in definitions for value in dependencies):
+            raise RuntimeError(f"invalid workflow dependencies for {name}")
+        if not item.get("owner") or "write_roots" not in item or "deny_roots" not in item:
+            raise RuntimeError(f"incomplete workflow boundary for {name}")
+        result[name] = Stage(name, str(item["owner"]), tuple(item.get("required_outputs", [])),
+                             str(item.get("failure_action") or ""))
+    return result
+
+
+# V5 stages are authoritative. Legacy aliases remain temporarily so existing
+# commands can migrate without losing historical failure/resume compatibility.
+STAGES.update(load_workflow_stages())
+
+
 MODEL_STAGES = (
     "stage0_env_check",
     "stage1_context_intake",
@@ -934,6 +958,20 @@ def run_adapt(context_id: str, extra: list[str]) -> int:
     rc = run_sdk_check(context_id)
     if rc:
         return rc
+    preparation = (
+        ("stage3_context_normalize", "normalize_device_context.py"),
+        ("stage4a_capability_mapping", "resolve_capability_mapping.py"),
+        ("stage5_transport_resolve", "resolve_transport_profile.py"),
+        ("stage9_pre_adapt_verification", "generate_adapter_task.py"),
+    )
+    for stage_name, script in preparation:
+        rc = run_command(
+            context_id, stage_name,
+            [sys.executable, str(SCRIPT_DIR / script), context_id],
+            preserve_child_failure=True,
+        )
+        if rc:
+            return rc
     rc = run_command(context_id, "stage8_yaml_generate", [sys.executable, str(SCRIPT_DIR / "adapt_hal_device.py"), context_id, *extra])
     if rc:
         return rc

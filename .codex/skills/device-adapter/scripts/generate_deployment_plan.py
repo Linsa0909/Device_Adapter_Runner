@@ -8,7 +8,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from plugin_common import CONTEXTS, load_contract, load_json, write_json
+from plugin_common import (CONTEXTS, load_contract, load_json, load_platform_profile,
+                           platform_profile_conflicts, write_json)
 
 
 LAYERS = ("load", "instance", "capability", "functional", "multi_instance")
@@ -150,6 +151,11 @@ def main() -> int:
     path = CONTEXTS / f"{args.context_id}.deployment_plan.json"
     existing = load_json(path) if path.is_file() else {}
     target = dict(contract.get("target_build") or {})
+    profile = load_platform_profile()
+    conflicts = platform_profile_conflicts({**contract, **target})
+    if conflicts:
+        print("PLATFORM_PROFILE_CONFLICT: " + "; ".join(conflicts))
+        return 17
     runtime = dict(existing.get("runtime_test") or {})
     ros = dict(existing.get("ros_compatibility") or {})
     checks = dict(existing.get("acceptance_checks") or {})
@@ -167,7 +173,7 @@ def main() -> int:
         runtime["project_dir"] = args.project_dir
     elif not runtime.get("project_dir"):
         runtime["project_dir"] = target.get("runtime_project_dir") or ""
-    runtime.setdefault("project_mount", "/workspace/yunshu")
+    runtime.setdefault("project_mount", profile["project_mount"])
     runtime.setdefault("runtime_root", target.get("runtime_root") or "/etc/vega/access/runtime")
     runtime.setdefault("runtime_mount", "/hal-runtime")
     if not runtime.get("deployment_file"):
@@ -180,7 +186,7 @@ def main() -> int:
         )
     runtime.setdefault("ros_setup", f"/opt/ros/{target.get('ros_distro') or 'humble'}/setup.bash")
     runtime.setdefault("workspace_setup", "/workspace/yunshu/install/setup.bash")
-    runtime.setdefault("instance_count", 1)
+    runtime.setdefault("instance_count", profile["runtime_instance_count"])
     runtime.setdefault("enabled_adapter_types", [adapter])
     runtime.setdefault("privileged", True)
     runtime.setdefault("extra_mounts", [])
@@ -188,7 +194,7 @@ def main() -> int:
 
     ros.setdefault("domain_id", target.get("ros_domain_id", 0))
     ros.setdefault("localhost_only", target.get("ros_localhost_only", 0))
-    ros.setdefault("rmw_implementation", target.get("rmw_implementation") or "rmw_fastrtps_cpp")
+    ros.setdefault("rmw_implementation", profile["rmw_implementation"])
     ros.setdefault("hal_interface_version", contract.get("sdk_version") or "")
 
     generated = generated_checks(adapter, refs, topic_prefix, manager_ns)

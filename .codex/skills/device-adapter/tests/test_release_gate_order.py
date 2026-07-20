@@ -154,7 +154,15 @@ class ReleaseGateOrderTests(unittest.TestCase):
             self.assertEqual(orchestrator.run_adapt("NanoRadar", ["--allow-code"]), 0)
 
         scripts = [Path(command[1]).name for _stage, command in commands]
-        self.assertEqual(scripts, ["plugin_sdk_check.py", "verify_adapter_sdk.py", "adapt_hal_device.py"])
+        self.assertEqual(scripts, [
+            "plugin_sdk_check.py",
+            "verify_adapter_sdk.py",
+            "normalize_device_context.py",
+            "resolve_capability_mapping.py",
+            "resolve_transport_profile.py",
+            "generate_adapter_task.py",
+            "adapt_hal_device.py",
+        ])
         self.assertNotIn("generate_runtime_files.py", scripts)
 
     def test_sdk_check_runs_static_contract_then_minimal_adapter_smoke(self) -> None:

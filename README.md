@@ -184,6 +184,26 @@ Then the read-only verification Agent runs build/tests,
 `verification-before-completion`, C/C++ review, and differential review. Explicit
 human approval is bound to the tested source and contract fingerprint.
 
+### V5 Evidence Pipeline
+
+V5 uses `scripts/workflow_definition.json` as the Stage DAG contract and the
+fixed `yunshu-aarch64-humble` platform profile. Before source generation,
+`adapt --allow-code` produces evidence-backed intermediate contracts:
+
+```text
+ops/contexts/<id>.normalized_context.json
+ops/contexts/<id>.capability_mapping.json
+ops/contexts/<id>.transport_bindings.json
+ops/contexts/<id>.adapter_implementation_task.json
+```
+
+Required features must map to capability groups present in the immutable HAL
+SDK. Connections resolve through Serial, CAN, UDP, TCP, USB, UVC, or Vendor SDK
+profiles. Missing facts block coding instead of being inferred from a device
+name. Independent tests are owned by the test-design Agent; the implementation
+Agent cannot modify those tests or the HAL platform source. Deployment verifies
+local and remote SHA-256 values before unpacking the plugin package.
+
 ### Workflow Authorization
 
 Each explicit `/device-adapter` command is one complete workflow authorization

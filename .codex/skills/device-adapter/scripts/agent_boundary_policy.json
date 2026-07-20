@@ -10,6 +10,16 @@
     }
   },
   "stages": {
+    "stage9_pre_adapt_verification": {
+      "agent": "adapter-test-designer-agent",
+      "write_allowlist": ["adapter_plugins/{adapter_type}/tests/**", "ops/artifacts/**"],
+      "write_denylist": ["adapter_plugins/{adapter_type}/src/**", "adapter_plugins/{adapter_type}/include/**", "src/**"]
+    },
+    "stage9a_test_design": {
+      "agent": "adapter-test-designer-agent",
+      "write_allowlist": ["adapter_plugins/{adapter_type}/tests/**", "ops/artifacts/**"],
+      "write_denylist": ["adapter_plugins/{adapter_type}/src/**", "adapter_plugins/{adapter_type}/include/**", "src/**"]
+    },
     "stage1_context_intake": {
       "agent": "context-mapper",
       "write_allowlist": [
@@ -109,6 +119,7 @@
       ],
       "write_denylist": [
         "src/**",
+        "adapter_plugins/{adapter_type}/tests/**",
         "**/*.capability.yaml",
         "Dockerfile",
         "docker-compose.yml",

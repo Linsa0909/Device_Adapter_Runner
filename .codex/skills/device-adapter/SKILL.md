@@ -12,7 +12,12 @@ built HAL Adapter runtime plugin. The default delivery is not an in-tree HAL
 source modification and not a per-device Docker image.
 
 Read [references/runtime-plugin-contract.md](references/runtime-plugin-contract.md)
-before `model`, `adapt`, `plugin-build`, `verify`, `package`, `deploy`, or `test`.
+and [references/architecture-v5.md](references/architecture-v5.md) before
+`model`, `adapt`, `plugin-build`, `verify`, `package`, `deploy`, or `test`.
+
+`scripts/workflow_definition.json` is the authoritative Stage DAG. Agent maps,
+prompts, and Python stage metadata must be derived from it, not maintained as a
+second workflow definition.
 
 ## Commands
 
@@ -45,7 +50,7 @@ it must not compile HAL or create a device-specific business image in plugin mod
 
 ```text
 context -> model-prep -> target-sdk-package -> sdk-check --bootstrap
--> model -> sdk-check -> adapt --allow-code -> target-plugin-build
+-> model -> sdk-check -> adapt --allow-code (task -> code -> target build -> .so verify)
 -> verify -> review -> human approve -> package -> deploy -> test
 ```
 
@@ -116,6 +121,9 @@ ops/contexts/<id>.functional_chain.json
 ops/contexts/<id>.dependency_checklist.json
 ops/contexts/<id>.plugin_contract.json
 ops/contexts/<id>.sdk_inventory.json
+ops/contexts/<id>.normalized_context.json
+ops/contexts/<id>.capability_mapping.json
+ops/contexts/<id>.transport_bindings.json
 ```
 
 The plugin contract must declare `delivery_mode=runtime_plugin`, adapter/vendor
@@ -138,6 +146,31 @@ publish/control, receiver/service where applicable, and functional health proof.
 Every required header, library, helper, daemon, device node, kernel feature,
 mount, port, environment variable, and startup dependency must have evidence and
 an owner.
+
+Requested features are mapped only to capability groups discovered from the
+immutable SDK. Required unmapped features block adaptation. Connection evidence
+resolves through the Serial, CAN, UDP, TCP, USB, UVC, or Vendor SDK profiles;
+multiple bindings are allowed. Device names never select capabilities or
+transports.
+
+## Adapt Coding Loop
+
+`adapt --allow-code` is one Codex-level closed loop:
+
+1. Normalize context and resolve capability and transport evidence.
+2. Generate `ops/contexts/<id>.adapter_implementation_task.json`.
+3. The test-design role writes independent tests and RED evidence but not src.
+4. The Adapter builder writes only plugin src/include/CMake/config and may not
+   modify those independent tests, HAL platform source, capability YAML, or SDK.
+5. Build in the declared AArch64 ROS 2 Humble runtime container and verify the
+   resulting `.so` ABI, architecture, RPATH, dependency closure, model and config.
+6. Run independent verification, C++ review and differential review.
+
+Missing protocol/SDK evidence returns `BLOCKED`; missing target build conditions
+returns `TARGET_BUILD_ENVIRONMENT_UNAVAILABLE`. A generated fail-closed skeleton
+is not completion evidence. Python creates task envelopes and deterministic
+reports; Codex performs Agent-owned tests and source changes, then resumes the
+same action automatically.
 
 ## SDK Gate
 

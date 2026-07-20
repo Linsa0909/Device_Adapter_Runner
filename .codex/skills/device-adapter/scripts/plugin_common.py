@@ -5,12 +5,20 @@ from __future__ import annotations
 
 import json
 import re
+import hashlib
 from pathlib import Path
 from typing import Any
 
 
 CONTEXTS = Path("ops/contexts")
 ARTIFACTS = Path("ops/artifacts")
+SKILL_ROOT = Path(__file__).resolve().parents[1]
+PLATFORM_PROFILE_PATH = SKILL_ROOT / "profiles/platform/yunshu-aarch64-humble.json"
+FINGERPRINT_IGNORED_DIRS = {
+    ".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    "build", "install", "log", "logs", "artifacts", "runs",
+}
+FINGERPRINT_IGNORED_SUFFIXES = {".pyc", ".pyo", ".log", ".tmp"}
 
 REQUIRED_CONTRACT_FIELDS = (
     "adapter_type",
@@ -39,6 +47,38 @@ def load_json(path: Path) -> dict[str, Any]:
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def load_platform_profile() -> dict[str, Any]:
+    return load_json(PLATFORM_PROFILE_PATH)
+
+
+def platform_profile_conflicts(values: dict[str, Any]) -> list[str]:
+    profile = load_platform_profile()
+    aliases = {"target_arch": "target_arch", "ros_distro": "ros_distro",
+               "rmw_implementation": "rmw_implementation", "project_mount": "project_mount"}
+    return [f"{key}: expected {profile[key]}, got {values[key]}" for key in aliases
+            if values.get(key) not in (None, "") and values.get(key) != profile[key]]
+
+
+def is_ignored_fingerprint_path(path: Path) -> bool:
+    return (any(part in FINGERPRINT_IGNORED_DIRS for part in path.parts)
+            or path.suffix.lower() in FINGERPRINT_IGNORED_SUFFIXES or path.name == ".DS_Store")
+
+
+def fingerprint_paths(paths: list[Path], workspace: Path | None = None) -> tuple[str, list[str]]:
+    root = (workspace or Path.cwd()).resolve()
+    digest = hashlib.sha256(); included: list[str] = []
+    for path in sorted(set(paths), key=lambda item: item.as_posix()):
+        absolute = path.absolute()
+        if not absolute.is_relative_to(root) or is_ignored_fingerprint_path(path):
+            continue
+        relative = absolute.relative_to(root).as_posix(); included.append(relative)
+        digest.update(relative.encode()); digest.update(b"\0")
+        if path.is_symlink(): digest.update(path.readlink().as_posix().encode())
+        elif path.is_file(): digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return "sha256:" + digest.hexdigest(), included
 
 
 def contract_path(context_id: str) -> Path:

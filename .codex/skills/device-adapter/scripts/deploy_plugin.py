@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import shlex
 import subprocess
 from pathlib import Path
@@ -22,6 +23,14 @@ def normalize_arch(value: str) -> str:
 
 def run(command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def main() -> int:
@@ -43,24 +52,43 @@ def main() -> int:
         return 4
 
     target = f"{args.user}@{args.host}"
-    remote_archive = f"/tmp/{archive.name}"
+    remote_temp = f"/tmp/device-adapter-{args.context_id}"
+    remote_archive = f"{remote_temp}/{archive.name}"
+    remote_deployment_temp = f"{remote_temp}/{deployment.name}"
+    archive_sha = sha256(archive)
+    deployment_sha = sha256(deployment)
+    upload_manifest = {
+        "schema_version": "1.0", "context_id": args.context_id,
+        "files": [
+            {"local_path": str(archive), "remote_temp_path": remote_archive, "sha256": archive_sha},
+            {"local_path": str(deployment), "remote_temp_path": remote_deployment_temp, "sha256": deployment_sha},
+        ],
+    }
+    write_json(ARTIFACTS / f"{args.context_id}.upload_manifest.json", upload_manifest)
     root = shlex.quote(args.runtime_root)
     remote_archive_q = shlex.quote(remote_archive)
     image_q = shlex.quote(str(contract["runtime_image"]))
     plugin_q = shlex.quote(f"{args.runtime_root}/adapters/libhal_adapter_{contract['adapter_type']}.so")
     config_q = shlex.quote(f"{args.runtime_root}/config/{contract['adapter_type']}.json")
     remote_deployment = f"{args.runtime_root}/deployment/{contract['adapter_type']}-only.yaml"
-    prepare = f"mkdir -p {root}/adapters {root}/config {root}/deps {root}/model/devices {root}/deployment"
+    prepare = (f"mkdir -p {shlex.quote(remote_temp)} {root}/adapters {root}/config "
+               f"{root}/deps {root}/model/devices {root}/deployment")
+    verify_uploads = (
+        f"test \"$(sha256sum {shlex.quote(remote_archive)} | awk '{{print $1}}')\" = {shlex.quote(archive_sha)} && "
+        f"test \"$(sha256sum {shlex.quote(remote_deployment_temp)} | awk '{{print $1}}')\" = {shlex.quote(deployment_sha)}"
+    )
     commands = [
         ["ssh", target, prepare],
         ["scp", str(archive), f"{target}:{remote_archive}"],
-        ["ssh", target, f"tar -xzf {remote_archive_q} -C {root}"],
-        ["scp", str(deployment), f"{target}:{remote_deployment}"],
+        ["scp", str(deployment), f"{target}:{remote_deployment_temp}"],
+        ["ssh", target, verify_uploads],
+        ["ssh", target, f"tar -xzf {remote_archive_q} -C {root} && cp {shlex.quote(remote_deployment_temp)} {shlex.quote(remote_deployment)}"],
         ["ssh", target, f"docker image inspect {image_q} >/dev/null"],
         ["ssh", target, "uname -m"],
         ["ssh", target, f"test -f {plugin_q}"],
         ["ssh", target, f"test -f {config_q}"],
         ["ssh", target, f"test -f {shlex.quote(remote_deployment)}"],
+        ["ssh", target, f"rm -rf {shlex.quote(remote_temp)}"],
     ]
     results = []
     for item in commands:
@@ -68,7 +96,12 @@ def main() -> int:
         results.append({"command": item, "exit_code": result.returncode, "output": result.stdout[-4000:]})
         if result.returncode:
             break
-    actual_arch = normalize_arch(str(results[5]["output"])) if len(results) > 5 else ""
+    if len(results) >= 4 and results[3]["exit_code"] != 0:
+        run(["ssh", target, f"rm -rf {shlex.quote(remote_temp)}"])
+        write_json(report_path, {"status":"FAIL","error_code":"UPLOAD_SHA256_MISMATCH",
+                   "host":args.host,"upload_manifest":str(ARTIFACTS/f"{args.context_id}.upload_manifest.json"),"commands":results})
+        return 16
+    actual_arch = normalize_arch(str(results[6]["output"])) if len(results) > 6 else ""
     expected_arch = normalize_arch(str(contract["target_arch"]))
     passed = (
         len(results) == len(commands)
@@ -80,6 +113,7 @@ def main() -> int:
         "error_code": "" if passed else "REMOTE_PLUGIN_DEPLOY_FAILED",
         "host": args.host, "user": args.user, "runtime_root": args.runtime_root,
         "runtime_image": contract["runtime_image"], "commands": results,
+        "upload_manifest": str(ARTIFACTS / f"{args.context_id}.upload_manifest.json"),
         "expected_arch": expected_arch, "actual_arch": actual_arch,
         "container_mounts": {
             f"{args.runtime_root}/adapters": "/hal-runtime/adapters",

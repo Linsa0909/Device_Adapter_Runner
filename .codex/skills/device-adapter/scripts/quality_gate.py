@@ -162,6 +162,15 @@ def validate_report(name: str, path: Path, expected_fingerprint: str) -> tuple[b
         errors.append(f"{name} status is {status or '<missing>'}, expected PASS")
     if report.get("source_fingerprint") != expected_fingerprint:
         errors.append(f"{name} report is missing or stale for the current source fingerprint")
+    evidence = report.get("evidence")
+    if not isinstance(evidence, list) or not evidence:
+        errors.append(f"{name} report has no evidence")
+    elif not any(
+        (isinstance(item, str) and item.strip())
+        or (isinstance(item, dict) and str(item.get("value") or item.get("path") or item.get("command") or "").strip())
+        for item in evidence
+    ):
+        errors.append(f"{name} report evidence is not locatable")
     if name in {"tdd", "verification"}:
         commands = report.get("commands")
         if not isinstance(commands, list) or not commands:
