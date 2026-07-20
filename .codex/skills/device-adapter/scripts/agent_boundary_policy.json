@@ -62,6 +62,7 @@
       "agent": "deployment-planner-agent",
       "write_allowlist": [
         "ops/contexts/{context_id}.deployment_plan.json",
+        "ops/contexts/{context_id}.deployment.yaml",
         "ops/contexts/{context_id}.device_spec.json",
         "ops/artifacts/**"
       ],

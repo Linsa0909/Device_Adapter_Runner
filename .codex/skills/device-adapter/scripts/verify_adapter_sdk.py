@@ -34,6 +34,24 @@ def normalized_arch(value: str) -> str:
     return value
 
 
+def target_evidence_arch_matches(evidence: str, target_arch: str) -> bool:
+    """Recognize canonical file/readelf architecture names without fuzzy cross-match."""
+    target = normalized_arch(target_arch)
+    text = evidence.lower()
+    if target == "aarch64":
+        return bool(
+            re.search(r"\bmachine\s*:\s*aarch64\b", text)
+            or re.search(r"\barm\s+aarch64\b", text)
+            or re.search(r"\belf(?:32|64)?[^\n]*\baarch64\b", text)
+        )
+    if target == "x86_64":
+        return bool(
+            re.search(r"\bmachine\s*:\s*(?:advanced micro devices )?x86-64\b", text)
+            or re.search(r"\bx86[_-]64\b", text)
+        )
+    return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("context_id")
@@ -77,8 +95,15 @@ def main() -> int:
             })
             return 8
         evidence = evidence_path.read_text(encoding="utf-8") if evidence_path.is_file() else ""
-        required = (*ABI_SYMBOLS, "$ORIGIN/../deps", "ARM aarch64")
-        passed = target_result.get("status") == "PASS" and all(value in evidence for value in required) and "not found" not in evidence
+        required = (*ABI_SYMBOLS, "$ORIGIN/../deps")
+        missing_markers = [value for value in required if value not in evidence]
+        architecture_match = target_evidence_arch_matches(evidence, target)
+        passed = (
+            target_result.get("status") == "PASS"
+            and not missing_markers
+            and architecture_match
+            and "not found" not in evidence
+        )
         write_json(report_path, {
             "schema_version": "1.0", "context_id": args.context_id,
             "status": "PASS" if passed else "FAIL",
@@ -86,6 +111,8 @@ def main() -> int:
             "sdk_root": str(sdk), "host_arch": host, "target_arch": target,
             "target_report": str(target_report), "target_evidence": str(evidence_path),
             "required_markers": list(required),
+            "missing_markers": missing_markers,
+            "architecture_match": architecture_match,
         })
         print(f"[AGENT_STAGE] stage=stage6b_sdk_validate status={'success' if passed else 'fail'}")
         return 0 if passed else 8

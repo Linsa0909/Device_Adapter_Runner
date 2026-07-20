@@ -20,6 +20,11 @@ Your job:
 11. Execute every mandatory v4 scenario from acceptance_checks.scenarios:
 private config failures, instance mismatch, reconnect, Slow/FastPath, fault
 injection, lifecycle cleanup, real multi-instance, delayed reload, and soak.
+12. Always create a new service container from runtime_test. Require
+--network host and --ipc host, then run ROS calls in ephemeral client containers
+with identical ROS_DOMAIN_ID, ROS_LOCALHOST_ONLY, and RMW_IMPLEMENTATION plus
+ROS2CLI_NO_DAEMON=1. Never attach to or infer an existing service container.
+13. Collect docker logs before applying cleanup_policy.
 
 Do not:
 - patch code

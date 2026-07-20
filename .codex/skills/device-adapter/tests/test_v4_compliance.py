@@ -1,4 +1,6 @@
 import json
+import importlib.util
+import os
 import subprocess
 import sys
 import tarfile
@@ -87,6 +89,96 @@ class V4ComplianceTests(unittest.TestCase):
         self.assertIn("use_target_evidence = args.target_evidence or target != host", script)
         self.assertNotIn("SDK_EXAMPLE_TOOLCHAIN_REQUIRED", script)
 
+    def test_target_sdk_architecture_accepts_readelf_machine_names(self) -> None:
+        sys.path.insert(0, str(SCRIPTS))
+        spec = importlib.util.spec_from_file_location("verify_adapter_sdk", SCRIPTS / "verify_adapter_sdk.py")
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        try:
+            spec.loader.exec_module(module)
+            self.assertTrue(module.target_evidence_arch_matches("Machine: AArch64", "aarch64"))
+            self.assertTrue(module.target_evidence_arch_matches("Machine: Advanced Micro Devices X86-64", "x86_64"))
+            self.assertFalse(module.target_evidence_arch_matches("Machine: AArch64", "x86_64"))
+        finally:
+            sys.path.remove(str(SCRIPTS))
+
+    def test_preserved_child_failure_refreshes_last_failure_stage(self) -> None:
+        spec = importlib.util.spec_from_file_location("stage_orchestrator", SCRIPTS / "stage_orchestrator.py")
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        previous = Path.cwd()
+        try:
+            os.chdir(self.root)
+            module.init_logging("demo", "sdk-check", [])
+            child = (
+                "from pathlib import Path; import json; "
+                "p=Path('ops/artifacts/demo.sdk_validation.json'); p.parent.mkdir(parents=True,exist_ok=True); "
+                "p.write_text(json.dumps({'status':'FAIL','error_code':'TARGET_SDK_EVIDENCE_INVALID'})); "
+                "raise SystemExit(8)"
+            )
+            rc = module.run_command(
+                "demo", "stage6b_sdk_validate", [sys.executable, "-c", child],
+                preserve_child_failure=True,
+            )
+            self.assertEqual(rc, 8)
+            failure = json.loads((self.root / "ops/artifacts/last_failure.json").read_text())
+            self.assertEqual(failure["stage"], "stage6b_sdk_validate")
+            self.assertEqual(failure["error_code"], "TARGET_SDK_EVIDENCE_INVALID")
+        finally:
+            os.chdir(previous)
+            sys.modules.pop(spec.name, None)
+
+    def test_success_only_clears_failure_owned_by_that_action(self) -> None:
+        spec = importlib.util.spec_from_file_location("stage_orchestrator", SCRIPTS / "stage_orchestrator.py")
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        previous = Path.cwd()
+        try:
+            os.chdir(self.root)
+            failure_path = self.root / "ops/artifacts/last_failure.json"
+            failure_path.write_text(json.dumps({"context_id": "demo", "stage": "stage6b_sdk_validate"}))
+            module.clear_resolved_failure("demo", "model")
+            self.assertTrue(failure_path.exists())
+            module.clear_resolved_failure("demo", "sdk-check")
+            self.assertFalse(failure_path.exists())
+        finally:
+            os.chdir(previous)
+            sys.modules.pop(spec.name, None)
+
+    def test_quality_fingerprint_ignores_python_cache_files(self) -> None:
+        spec = importlib.util.spec_from_file_location("quality_gate", SCRIPTS / "quality_gate.py")
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        previous = Path.cwd()
+        try:
+            os.chdir(self.root)
+            plugin = self.root / "adapter_plugins/demo"
+            cache = plugin / "tests/__pycache__"
+            cache.mkdir(parents=True)
+            source = plugin / "src/demo.cpp"
+            source.parent.mkdir(parents=True)
+            source.write_text("int demo = 1;\n")
+            pyc = cache / "test_demo.cpython-310.pyc"
+            pyc.write_bytes(b"cache-one")
+            first, included = module.source_fingerprint("demo")
+            pyc.write_bytes(b"cache-two")
+            second, included_after = module.source_fingerprint("demo")
+            self.assertEqual(first, second)
+            self.assertEqual(included, included_after)
+            self.assertFalse(any("__pycache__" in value or value.endswith((".pyc", ".pyo")) for value in included))
+            source.write_text("int demo = 2;\n")
+            third, _ = module.source_fingerprint("demo")
+            self.assertNotEqual(second, third)
+        finally:
+            os.chdir(previous)
+            sys.modules.pop(spec.name, None)
+
     def test_remote_acceptance_has_fixed_v4_scenarios(self) -> None:
         script = (SCRIPTS / "test_plugin_remote.py").read_text()
         for scenario in (
@@ -96,6 +188,61 @@ class V4ComplianceTests(unittest.TestCase):
             "delayed_reload", "soak",
         ):
             self.assertIn(scenario, script)
+
+    def test_remote_acceptance_creates_isolated_service_and_client_containers(self) -> None:
+        script = (SCRIPTS / "test_plugin_remote.py").read_text()
+        for marker in (
+            "runtime_test", "docker run -d", '"--network", "host"', '"--ipc", "host"',
+            "ROS2CLI_NO_DAEMON", "docker logs", "cleanup_policy",
+            "project_dir", "manager_command", "deployment_file",
+        ):
+            self.assertIn(marker, script)
+        for option in ("--project-dir", "--deployment-file", "--manager-command", "runtime_overrides"):
+            self.assertIn(option, script)
+
+    def test_model_stage5_requires_a_real_deployment_plan(self) -> None:
+        orchestrator = (SCRIPTS / "stage_orchestrator.py").read_text()
+        stage_map = json.loads((SCRIPTS / "agent_stage_map.json").read_text())
+        expected = "ops/contexts/{context_id}.deployment_plan.json"
+        stage5_block = orchestrator.split('"stage5_deployment_plan": Stage(', 1)[1].split("),", 1)[0]
+        self.assertIn(expected, stage5_block)
+        self.assertNotIn("device_spec.json", stage5_block)
+        self.assertEqual(
+            stage_map["stage5_deployment_plan"]["outputs"],
+            [
+                "ops/contexts/<context_id>.deployment_plan.json",
+                "ops/contexts/<context_id>.deployment.yaml",
+            ],
+        )
+        self.assertIn('"stage5_deployment_plan"', orchestrator)
+        self.assertIn('"generate_deployment_plan.py"', orchestrator)
+
+    def test_deployment_plan_generator_materializes_blocking_gaps(self) -> None:
+        result = run("generate_deployment_plan.py", "demo", cwd=self.root)
+        self.assertEqual(result.returncode, 17, result.stdout + result.stderr)
+        plan = json.loads((self.root / "ops/contexts/demo.deployment_plan.json").read_text())
+        self.assertEqual(plan["status"], "BLOCKED")
+        self.assertIn("runtime_test.project_dir", plan["blocking_gaps"])
+        self.assertEqual(plan["runtime_test"]["enabled_adapter_types"], ["demo"])
+
+    def test_deployment_plan_generator_creates_single_device_yaml_and_checks(self) -> None:
+        result = run(
+            "generate_deployment_plan.py", "demo",
+            "--project-dir", "/home/Demo", cwd=self.root,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        plan = json.loads((self.root / "ops/contexts/demo.deployment_plan.json").read_text())
+        self.assertEqual(plan["status"], "READY_WITH_NOT_RUN")
+        self.assertEqual(plan["runtime_test"]["project_dir"], "/home/Demo")
+        self.assertTrue(plan["acceptance_checks"]["load"])
+        self.assertEqual(plan["acceptance_checks"]["multi_instance"][0]["status"], "NOT_RUN")
+        deployment = self.root / "ops/contexts/demo.deployment.yaml"
+        self.assertIn("adapter_type: demo", deployment.read_text())
+
+    def test_remote_deploy_installs_single_device_deployment_yaml(self) -> None:
+        script = (SCRIPTS / "deploy_plugin.py").read_text()
+        self.assertIn("deployment.yaml", script)
+        self.assertIn("/deployment/", script)
 
     def test_source_contract_verifier_enforces_ros_and_runtime_rules(self) -> None:
         script = (SCRIPTS / "verify_plugin_source.py").read_text()

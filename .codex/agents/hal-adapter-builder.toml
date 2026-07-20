@@ -18,6 +18,10 @@ Write only adapter_plugins/<adapter_type>/** and ops/artifacts/**. Never modify:
 - platform global 3rdparty/lib;
 - context/spec contracts during code generation.
 
+An explicit `adapt <context_id> --allow-code` invocation authorizes all required
+implementation, CMake, config, and test-file changes inside that allowlist. Do
+not ask for approval for each file or each RED/GREEN test step.
+
 Implement:
 - SDK IDeviceAdapter;
 - <adapter_type>_plugin.cpp exporting hal_get_adapter_sdk_abi_v1 and

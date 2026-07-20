@@ -77,6 +77,33 @@ adapter directories are invalid. Runtime loading is startup-time plus explicit
 
 Any write outside the stage allowlist is `BOUNDARY_WRITE_VIOLATION`.
 
+## Command Authorization
+
+An explicit `/device-adapter` action authorizes every declared, deterministic
+substep of that action. The orchestrator records the scope in
+`ops/artifacts/<context_id>.workflow_authorization.json` before running stages.
+
+- `adapt <id> --allow-code` authorizes all plugin source, CMake, config, model,
+  test, and TDD evidence changes below the plugin's write allowlist.
+- `target-sdk-package` and `target-plugin-build` authorize their unique remote
+  workspace and ephemeral build container.
+- `test` authorizes one fresh service container, ephemeral client containers,
+  evidence collection, and declared cleanup.
+- Verification and review agents may write only their predeclared report trees
+  under `ops/artifacts/**`.
+
+Agents must use native workspace write/patch APIs for reports. Shell heredocs,
+`cat >`, `tee`, and output redirection are forbidden for planned report files,
+because they turn an already-authorized workflow output into a new shell side
+effect that may trigger a redundant approval prompt.
+
+This contract does not bypass Codex host security. An external-network request,
+SSH operation, privileged Docker operation, credential access, or write outside
+the workspace may still require one platform-level approval. Such approval
+should use a narrowly scoped reusable command prefix where the host supports it.
+The skill must not ask optional design questions during execution: missing
+required facts produce `BLOCKED` plus a remediation plan.
+
 ## Product Separation
 
 Formal plugin package:
@@ -129,3 +156,39 @@ Classify missing hardware tests as `NOT_RUN` or `BLOCKED`, not PASS.
 `localhost_only`, `rmw_implementation`, `hal_interface_version`) and
 evidence-backed `acceptance_checks` lists for `load`, `instance`, `capability`,
 `functional`, and `multi_instance`.
+
+The runtime portion is explicit and board-specific. Example:
+
+```json
+{
+  "ros_compatibility": {
+    "domain_id": 0,
+    "localhost_only": 0,
+    "rmw_implementation": "rmw_fastrtps_cpp",
+    "hal_interface_version": "2.0.0"
+  },
+  "runtime_test": {
+    "image": "registry.ghostcloud.cn/integration/hal_dev:v1.0",
+    "project_dir": "/home/gemini335/yunshu_access",
+    "project_mount": "/workspace/yunshu",
+    "runtime_root": "/etc/vega/access/runtime",
+    "runtime_mount": "/hal-runtime",
+    "deployment_file": "/etc/vega/access/runtime/deployment/gemini335-only.yaml",
+    "manager_command": "ros2 launch hardware_abstraction_layer manager_node.launch.py deployment_config:=/hal-runtime/deployment/gemini335-only.yaml",
+    "ros_setup": "/opt/ros/humble/setup.bash",
+    "workspace_setup": "/workspace/yunshu/install/setup.bash",
+    "instance_count": 1,
+    "enabled_adapter_types": ["gemini335"],
+    "privileged": true,
+    "cleanup_policy": "keep_on_failure"
+  }
+}
+```
+
+`test` never discovers or reuses an existing service container. It starts a
+uniquely named single-device service container with host network and host IPC,
+then runs each ROS CLI check in an ephemeral client container using the same
+image, DDS environment, project mount, and `ROS2CLI_NO_DAEMON=1`. The service log
+is collected before cleanup. The host-side `deployment_file` must already be
+materialized by the deployment or board-test-kit flow; the manager command uses
+its corresponding container path.

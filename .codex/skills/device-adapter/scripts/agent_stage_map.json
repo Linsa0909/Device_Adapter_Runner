@@ -54,7 +54,8 @@
   "stage5_deployment_plan": {
     "agent": "deployment-planner-agent",
     "outputs": [
-      "ops/contexts/<context_id>.deployment_plan.json"
+      "ops/contexts/<context_id>.deployment_plan.json",
+      "ops/contexts/<context_id>.deployment.yaml"
     ]
   },
   "stage6_dependency_audit": {
@@ -183,7 +184,13 @@
   "stage11b_cpp_review": {
     "agent": "verification-agent",
     "outputs": [
-      "ops/artifacts/<context_id>.c_review_report.json"
+      "ops/artifacts/<context_id>.c_review_report.json",
+      "ops/artifacts/c-review/<context_id>-stage11b/context.md",
+      "ops/artifacts/c-review/<context_id>-stage11b/plan.json",
+      "ops/artifacts/c-review/<context_id>-stage11b/findings/**",
+      "ops/artifacts/c-review/<context_id>-stage11b/coverage/**",
+      "ops/artifacts/c-review/<context_id>-stage11b/REPORT.md",
+      "ops/artifacts/c-review/<context_id>-stage11b/REPORT.sarif"
     ]
   },
   "stage11c_differential_review": {

@@ -61,6 +61,17 @@ sudo apt install -y poppler-utils tesseract-ocr \
 /device-adapter test <id> --host <host> --user root
 ```
 
+When the board HAL workspace is not part of the docs contract, supply it during
+modeling instead of reusing a temporary SDK build directory:
+
+```text
+/device-adapter model gemini335 --project-dir /home/Gemini335
+```
+
+Stage5 generates the machine-readable deployment plan and one-device deployment
+YAML. Deploy installs the YAML into the runtime tree; stage21 uses the board path
+only to mount the existing HAL `install/` workspace into the runtime container.
+
 Use the deterministic runner when slash commands are unavailable:
 
 ```bash
@@ -172,6 +183,31 @@ The deterministic gate checks:
 Then the read-only verification Agent runs build/tests,
 `verification-before-completion`, C/C++ review, and differential review. Explicit
 human approval is bound to the tested source and contract fingerprint.
+
+### Workflow Authorization
+
+Each explicit `/device-adapter` command is one complete workflow authorization
+within its documented boundary. For example, `adapt gemini335 --allow-code`
+authorizes the plugin implementation, CMake, configuration, tests, and evidence
+files under `adapter_plugins/gemini335/**` and `ops/artifacts/**`; agents must not
+pause for separate approval before creating each planned test or review report.
+The orchestrator records the effective scope in:
+
+```text
+ops/artifacts/<context_id>.workflow_authorization.json
+```
+
+Planned reports must be written with workspace file APIs. Agents are explicitly
+forbidden from using `cat >`, heredocs, `tee`, or shell redirection for those
+files, which avoids turning an ordinary report write into another shell approval
+request. Missing required information stops the workflow as `BLOCKED` and emits
+a remediation plan instead of opening an interactive design loop.
+
+Codex's own security boundary remains authoritative. SSH, restricted network,
+privileged Docker, credentials, and writes outside the workspace may still cause
+a platform-level approval prompt. The Skill cannot and must not silently bypass
+that protection; reusable approvals should be narrowly scoped to the required
+command family.
 
 Primary reports:
 

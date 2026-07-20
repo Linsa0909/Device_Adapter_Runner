@@ -7,6 +7,13 @@ Use `/device-adapter` commands to create independent HAL runtime Adapter plugins
 Default policy:
 - Default delivery_mode is `runtime_plugin`; do not fall back to in-tree integration.
 - Do not edit business source code unless the user explicitly passes `--allow-code`.
+- Treat `adapt --allow-code` as one complete authorization for all bounded
+  plugin implementation and test-file changes; do not request per-file approval.
+- Treat target build, deploy, and test command invocation as authorization for
+  their documented remote temporary workspaces/containers. Do not ask optional
+  mid-workflow questions; missing required facts produce BLOCKED evidence.
+- Planned reports under ops/artifacts/** must be written with native file/patch
+  tools, never shell heredoc/cat/tee redirection that causes redundant approval.
 - Write device code only under `adapter_plugins/<adapter_type>/`.
 - Do not generate capability YAML, modify adapter_factory, modify platform main CMake, or place private libraries in platform global directories.
 - Package only adapters/, optional deps/, model/devices/, and README.md.

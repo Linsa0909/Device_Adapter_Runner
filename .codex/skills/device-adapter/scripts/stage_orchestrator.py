@@ -32,6 +32,37 @@ CURRENT_LOG_FILE: Path | None = None
 STAGE_START_TIMES: dict[str, datetime] = {}
 STAGE_OUTPUTS: dict[str, list[str]] = {}
 
+ACTION_AUTHORIZATION: dict[str, list[str]] = {
+    "model": ["ops/contexts/**", "ops/artifacts/**"],
+    "model-prep": ["ops/contexts/**", "ops/artifacts/**"],
+    "adapt": ["adapter_plugins/<adapter_type>/**", "ops/artifacts/**"],
+    "target-sdk-package": ["remote unique workspace", "ephemeral sdk build container", "build/sdk/**", "ops/artifacts/**"],
+    "target-plugin-build": ["remote unique workspace", "ephemeral plugin build container", "build/<adapter>-package/**", "ops/artifacts/**"],
+    "verify": ["ops/artifacts/**"],
+    "review": ["ops/artifacts/**"],
+    "package": ["ops/artifacts/**"],
+    "deploy": ["remote runtime root", "remote temporary archive"],
+    "test": ["fresh remote service container", "ephemeral remote client containers", "ops/artifacts/logs/**"],
+    "loop": ["adapt/deploy/test scopes explicitly authorized by command flags and release approval"],
+}
+
+
+def record_command_authorization(action: str, context_id: str, extra: list[str]) -> None:
+    scopes = ACTION_AUTHORIZATION.get(action, ["ops/artifacts/**"])
+    payload = {
+        "schema_version": "1.0", "context_id": context_id,
+        "action": action, "authorization_source": "explicit_user_command",
+        "allow_code": "--allow-code" in extra,
+        "scopes": scopes,
+        "no_per_file_confirmation": True,
+        "safety_boundaries_remain_enforced": True,
+        "arguments": extra,
+        "recorded_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    path = ARTIFACTS / f"{context_id}.workflow_authorization.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
 
 @dataclass(frozen=True)
 class Stage:
@@ -98,8 +129,11 @@ STAGES: dict[str, Stage] = {
     "stage5_deployment_plan": Stage(
         "stage5_deployment_plan",
         "deployment-planner-agent",
-        ("ops/contexts/{context_id}.device_spec.json",),
-        "Run deployment-planner-agent and update deployment_entry/runtime requirements",
+        (
+            "ops/contexts/{context_id}.deployment_plan.json",
+            "ops/contexts/{context_id}.deployment.yaml",
+        ),
+        "Generate the deployment plan and single-device deployment YAML",
     ),
     "stage6_dependency_audit": Stage(
         "stage6_dependency_audit",
@@ -440,13 +474,21 @@ def supersede_pre_sdk_model_failure(context_id: str) -> None:
     json_write(path, status)
 
 
-def fail(context_id: str, stage_name: str, reason: str, evidence: list[str], next_action: str, exit_code: int = 2) -> int:
+def fail(
+    context_id: str,
+    stage_name: str,
+    reason: str,
+    evidence: list[str],
+    next_action: str,
+    exit_code: int = 2,
+    error_code_override: str = "",
+) -> int:
     stage = STAGES.get(stage_name, Stage(stage_name, "stage_orchestrator.py"))
     failure_id = f"f-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{stage_name}"
-    error_code = "STAGE_FAILED"
-    if "BOUNDARY_WRITE_VIOLATION" in reason:
+    error_code = error_code_override or "STAGE_FAILED"
+    if not error_code_override and "BOUNDARY_WRITE_VIOLATION" in reason:
         error_code = "BOUNDARY_WRITE_VIOLATION"
-    elif "missing" in reason.lower():
+    elif not error_code_override and "missing" in reason.lower():
         error_code = "REQUIRED_ARTIFACT_MISSING"
     json_write(
         ARTIFACTS / "last_failure.json",
@@ -698,6 +740,7 @@ def run_command(context_id: str, stage_name: str, command: list[str], *, preserv
     assert process.stdout is not None
     for line in process.stdout:
         append_raw_line(line)
+    process.stdout.close()
     returncode = process.wait()
     if returncode != 0:
         if returncode == 22 and stage_name == "stage11d_human_approval":
@@ -707,9 +750,46 @@ def run_command(context_id: str, stage_name: str, command: list[str], *, preserv
             )
             return returncode
         if preserve_child_failure:
-            marker(stage_name, "fail", returncode)
-            log_line(f"[AGENT_COMMAND_FAIL] preserved child failure for command: {' '.join(command)} exit_code={returncode}")
-            return returncode
+            failure_path = ARTIFACTS / "last_failure.json"
+            existing_failure: dict[str, Any] = {}
+            if failure_path.is_file():
+                try:
+                    existing_failure = json.loads(failure_path.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    existing_failure = {}
+            if existing_failure.get("context_id") == context_id and existing_failure.get("stage") == stage_name:
+                marker(stage_name, "fail", returncode)
+                log_line(f"[AGENT_COMMAND_FAIL] child failure already recorded for command: {' '.join(command)} exit_code={returncode}")
+                return returncode
+
+            child_report: dict[str, Any] = {}
+            child_report_path = ""
+            for template in STAGES.get(stage_name, Stage(stage_name, "stage_orchestrator.py")).outputs:
+                candidate = fmt_output(template, context_id)
+                if not candidate.is_file() or candidate.suffix != ".json":
+                    continue
+                try:
+                    payload = json.loads(candidate.read_text(encoding="utf-8"))
+                except json.JSONDecodeError:
+                    continue
+                if str(payload.get("status") or "").upper() in {"FAIL", "FAILED", "BLOCKED"}:
+                    child_report = payload
+                    child_report_path = str(candidate)
+                    break
+            child_error = str(child_report.get("error_code") or "CHILD_STAGE_FAILED")
+            child_summary = str(child_report.get("message") or child_report.get("summary") or "stage command failed")
+            evidence = [
+                "command: " + " ".join(command),
+                f"exit_code: {returncode}",
+                f"log_file: {log_file_for(context_id)}",
+            ]
+            if child_report_path:
+                evidence.append(f"child_report: {child_report_path}")
+            return fail(
+                context_id, stage_name, child_summary, evidence,
+                f"Inspect the child report and rerun /device-adapter rerun {context_id}",
+                returncode, child_error,
+            )
         return fail(
             context_id,
             stage_name,
@@ -757,7 +837,8 @@ def spec_has_runtime_requirements(context_id: str) -> bool:
     return bool(runtime or legacy)
 
 
-def run_model(context_id: str) -> int:
+def run_model(context_id: str, extra: list[str] | None = None) -> int:
+    extra = extra or []
     for stage_name in MODEL_STAGES:
         if stage_name == "stage0_env_check":
             rc = env_check(context_id)
@@ -769,6 +850,20 @@ def run_model(context_id: str) -> int:
                 context_id,
                 stage_name,
                 [sys.executable, str(SCRIPT_DIR / "functional_chain_check.py"), context_id],
+            )
+            if rc:
+                return rc
+            continue
+        if stage_name == "stage5_deployment_plan":
+            project_args: list[str] = []
+            if "--project-dir" in extra:
+                index = extra.index("--project-dir")
+                if index + 1 < len(extra):
+                    project_args = ["--project-dir", extra[index + 1]]
+            rc = run_command(
+                context_id,
+                stage_name,
+                [sys.executable, str(SCRIPT_DIR / "generate_deployment_plan.py"), context_id, *project_args],
             )
             if rc:
                 return rc
@@ -823,6 +918,14 @@ def env_check(context_id: str) -> int:
 
 
 def run_adapt(context_id: str, extra: list[str]) -> int:
+    if "--allow-code" not in extra:
+        return fail(
+            context_id, "stage10_adapter_codegen",
+            "CODE_MODIFICATION_NOT_AUTHORIZED: bounded plugin implementation was not authorized",
+            [],
+            "Run /device-adapter adapt {context_id} --allow-code",
+            23,
+        )
     rc = env_check(context_id)
     if rc:
         return rc
@@ -1088,9 +1191,36 @@ def run_rerun(context_id: str, extra: list[str]) -> int:
     return dispatch(action, context_id, extra)
 
 
+def clear_resolved_failure(context_id: str, action: str) -> None:
+    failure_path = ARTIFACTS / "last_failure.json"
+    if not failure_path.is_file():
+        return
+    try:
+        failure = json.loads(failure_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return
+    if failure.get("context_id") != context_id:
+        return
+    failed_stage = str(failure.get("stage") or "")
+    owning_action = RERUN_STARTS.get(failed_stage)
+    if action not in {owning_action, "rerun", "full"}:
+        return
+    failure_path.unlink()
+    status_file = status_path(context_id)
+    if status_file.is_file():
+        try:
+            status = json.loads(status_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            status = {}
+        status["failed_stages"] = [value for value in status.get("failed_stages", []) if value != failed_stage]
+        status.setdefault("resolved_failures", []).append({"stage": failed_stage, "resolved_by": action, "resolved_at": now_iso()})
+        json_write(status_file, status)
+    log_line(f"[AGENT_FAILURE_RESOLVED] stage={failed_stage} action={action}")
+
+
 def dispatch(action: str, context_id: str, extra: list[str]) -> int:
     if action == "model":
-        return run_model(context_id)
+        return run_model(context_id, extra)
     if action == "model-prep":
         return run_model_prep(context_id, extra)
     if action == "adapt":
@@ -1126,7 +1256,7 @@ def dispatch(action: str, context_id: str, extra: list[str]) -> int:
     if action == "rerun":
         return run_rerun(context_id, extra)
     if action == "full":
-        rc = run_model(context_id)
+        rc = run_model(context_id, extra)
         if rc:
             return rc
         rc = run_adapt(context_id, extra)
@@ -1147,7 +1277,11 @@ def main() -> int:
     parser.add_argument("extra", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     init_logging(args.context_id, args.action, args.extra)
-    return dispatch(args.action, args.context_id, args.extra)
+    record_command_authorization(args.action, args.context_id, args.extra)
+    rc = dispatch(args.action, args.context_id, args.extra)
+    if rc == 0:
+        clear_resolved_failure(args.context_id, args.action)
+    return rc
 
 
 if __name__ == "__main__":

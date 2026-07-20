@@ -8,7 +8,7 @@ import shlex
 import subprocess
 from pathlib import Path
 
-from plugin_common import ARTIFACTS, load_contract, write_json
+from plugin_common import ARTIFACTS, CONTEXTS, load_contract, write_json
 
 
 def normalize_arch(value: str) -> str:
@@ -34,8 +34,12 @@ def main() -> int:
     contract = load_contract(args.context_id)
     archive = ARTIFACTS / f"{args.context_id}_adapter_plugin.tar.gz"
     report_path = ARTIFACTS / f"{args.context_id}.remote_deploy.json"
+    deployment = CONTEXTS / f"{args.context_id}.deployment.yaml"
     if not archive.is_file():
         write_json(report_path, {"status": "FAIL", "error_code": "PLUGIN_PACKAGE_MISSING", "archive": str(archive)})
+        return 4
+    if not deployment.is_file():
+        write_json(report_path, {"status": "FAIL", "error_code": "TEST_DEPLOYMENT_MISSING", "path": str(deployment)})
         return 4
 
     target = f"{args.user}@{args.host}"
@@ -45,15 +49,18 @@ def main() -> int:
     image_q = shlex.quote(str(contract["runtime_image"]))
     plugin_q = shlex.quote(f"{args.runtime_root}/adapters/libhal_adapter_{contract['adapter_type']}.so")
     config_q = shlex.quote(f"{args.runtime_root}/config/{contract['adapter_type']}.json")
-    prepare = f"mkdir -p {root}/adapters {root}/config {root}/deps {root}/model/devices"
+    remote_deployment = f"{args.runtime_root}/deployment/{contract['adapter_type']}-only.yaml"
+    prepare = f"mkdir -p {root}/adapters {root}/config {root}/deps {root}/model/devices {root}/deployment"
     commands = [
         ["ssh", target, prepare],
         ["scp", str(archive), f"{target}:{remote_archive}"],
         ["ssh", target, f"tar -xzf {remote_archive_q} -C {root}"],
+        ["scp", str(deployment), f"{target}:{remote_deployment}"],
         ["ssh", target, f"docker image inspect {image_q} >/dev/null"],
         ["ssh", target, "uname -m"],
         ["ssh", target, f"test -f {plugin_q}"],
         ["ssh", target, f"test -f {config_q}"],
+        ["ssh", target, f"test -f {shlex.quote(remote_deployment)}"],
     ]
     results = []
     for item in commands:
@@ -61,7 +68,7 @@ def main() -> int:
         results.append({"command": item, "exit_code": result.returncode, "output": result.stdout[-4000:]})
         if result.returncode:
             break
-    actual_arch = normalize_arch(str(results[4]["output"])) if len(results) > 4 else ""
+    actual_arch = normalize_arch(str(results[5]["output"])) if len(results) > 5 else ""
     expected_arch = normalize_arch(str(contract["target_arch"]))
     passed = (
         len(results) == len(commands)
@@ -79,6 +86,7 @@ def main() -> int:
             f"{args.runtime_root}/config": "/hal-runtime/config",
             f"{args.runtime_root}/deps": "/hal-runtime/deps",
             f"{args.runtime_root}/model/devices": "/hal-runtime/model/devices",
+            f"{args.runtime_root}/deployment": "/hal-runtime/deployment",
         },
         "hal_rebuilt": False, "process_started": False,
     })

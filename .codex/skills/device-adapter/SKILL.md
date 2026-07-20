@@ -53,6 +53,32 @@ Stop at the first failed gate. Use `systematic-debugging` to create evidence and
 a scoped remediation plan. Do not modify code until the user authorizes another
 `adapt --allow-code` run.
 
+## Command Authorization
+
+Treat one explicit command as authorization for every deterministic substep in
+that command's documented boundary. Do not ask for per-file or per-test
+confirmation:
+
+- `adapt <id> --allow-code` authorizes create/modify/delete operations under
+  `adapter_plugins/<adapter_type>/**`, including CMake, config, device YAML,
+  implementation, and tests, plus evidence under `ops/artifacts/**`;
+- target build commands authorize their unique remote workspace and ephemeral
+  `docker run --rm` build container;
+- `test` authorizes a fresh isolated service container, ephemeral client
+  containers, log collection, and cleanup according to `cleanup_policy`;
+- `deploy` still requires fingerprint-bound release approval before changing the
+  remote runtime root.
+
+Write `ops/artifacts/<id>.workflow_authorization.json`. Continue without asking
+optional questions. If required facts, credentials, permissions, or evidence are
+missing, stop with BLOCKED and a remediation plan; never broaden scope or bypass
+the host application's sandbox/approval policy.
+
+Agent-owned report files are planned outputs, not new side effects. Create them
+with native file-write/patch tools inside their declared `ops/artifacts/**`
+directory. Never use shell heredocs, `cat >`, `tee`, or redirection to write a
+report and never ask for a second approval to do so.
+
 ## Context And Documents
 
 `context` preserves natural language in `ops/contexts/<id>.context.md`, recursively
@@ -349,6 +375,27 @@ provide executable checks and evidence for missing/invalid private config,
 instance mismatch, connect-disconnect-reconnect, SlowPath, FastPath, fault
 injection, lifecycle cleanup, two real simultaneous instances, delayed reload,
 and soak. A missing scenario is BLOCKED before SSH execution.
+
+`test` always starts a fresh single-device HAL service container; it never finds
+or reuses an existing one. The service and each ephemeral ROS client use host
+networking, host IPC, identical DDS environment, the declared HAL image, and the
+target project mounted read-only at `/workspace/yunshu`. ROS clients set
+`ROS2CLI_NO_DAEMON=1`. The service log is collected before `cleanup_policy` is
+applied. `runtime_test.project_dir`, `deployment_file`, and `manager_command`
+must be evidence-backed in `deployment_plan.json`; missing values are BLOCKED.
+Board facts that are not reliable during model may be supplied explicitly to
+stage21 with `--project-dir`, `--deployment-file`, `--manager-command`,
+`--image`, `--domain-id`, or `--rmw-implementation`. These values apply only to
+that test run, are recorded in `remote_acceptance.json`, and never rewrite the
+context contract.
+
+`model <id> --project-dir <board-path>` records the board HAL workspace only in
+the deployment plan. Stage5 generates both `<id>.deployment_plan.json` and a
+single-device `<id>.deployment.yaml`. `deploy` installs that YAML under the
+runtime `deployment/` directory. Generated acceptance checks are executable
+where current hardware permits; checks requiring a second physical device,
+manual disconnect, or an undeclared fault injector remain explicit `NOT_RUN`.
+Stage21 executes all runnable checks before returning BLOCKED for those items.
 
 ## State And Failure
 

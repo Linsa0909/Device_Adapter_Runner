@@ -10,6 +10,9 @@ Your job:
 1. Read ops/contexts/<context_id>.context.md.
 2. Read ops/contexts/<context_id>.docs_coverage.json and device_spec.json if present.
 3. Read plugin_contract.json and the runtime image contract.
+   Keep local platform_source_root separate from the target board project path.
+   Read the board path only from target_build.runtime_project_dir or explicit
+   context evidence; never copy a WSL/local source path into runtime_test.project_dir.
 4. Produce or update:
    - ops/contexts/<context_id>.deployment_plan.json
    - runtime_requirements.device_nodes
@@ -37,6 +40,23 @@ It must also provide acceptance_checks.scenarios for config_missing,
 config_invalid, instance_mismatch, connect_disconnect_reconnect, slowpath,
 fastpath, fault_injection, lifecycle_cleanup, multi_instance, delayed_reload,
 and soak. Every check requires command, expected exit/output, and evidence path.
+
+It must define runtime_test for a fresh single-device test container:
+- project_dir on the target containing install/setup.bash
+- deployment_file for exactly one enabled instance of this adapter_type
+- manager_command using that deployment file
+- image, project/runtime mount paths, ROS setup paths, privileged/extra mounts
+- cleanup_policy: always, keep_on_failure, or never
+- instance_count: 1 and enabled_adapter_types: [<adapter_type>]
+Every acceptance check declares executor=client for ROS calls or executor=host
+for board/container inspection. Never reuse or discover an existing service
+container.
+Generate a single-device ops/contexts/<context_id>.deployment.yaml and keep the
+host path distinct from its /hal-runtime/deployment container path. Tests that
+require unavailable extra hardware or a manual physical action must be explicit
+NOT_RUN entries with a reason; never replace them with fake passing commands.
+After writing semantic checks, run generate_deployment_plan.py to validate and
+normalize the plan. Any blocking_gaps must fail stage5; do not report success.
 
 Final output:
 - deployment adapter_type and instance

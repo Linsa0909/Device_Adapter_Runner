@@ -21,6 +21,8 @@ CHECK_STAGES = {
     "c_review": ("stage11b_cpp_review", "verification-agent"),
     "differential_review": ("stage11c_differential_review", "verification-agent"),
 }
+FINGERPRINT_EXCLUDED_DIRS = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+FINGERPRINT_EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
 
 
 def now_iso() -> str:
@@ -37,6 +39,14 @@ def read_json(path: Path) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def is_fingerprint_input(path: Path) -> bool:
+    return (
+        path.is_file()
+        and not any(part in FINGERPRINT_EXCLUDED_DIRS for part in path.parts)
+        and path.suffix.lower() not in FINGERPRINT_EXCLUDED_SUFFIXES
+    )
 
 
 def git_changed_files() -> list[Path]:
@@ -100,7 +110,10 @@ def source_fingerprint(context_id: str) -> tuple[str, list[str]]:
     ):
         if fixed.exists():
             candidates.append(fixed)
-    candidates = sorted(set(candidates), key=lambda item: item.as_posix())
+    candidates = sorted(
+        {path for path in candidates if is_fingerprint_input(path)},
+        key=lambda item: item.as_posix(),
+    )
     digest = hashlib.sha256()
     included: list[str] = []
     for path in candidates:
