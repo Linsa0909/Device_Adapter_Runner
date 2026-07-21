@@ -94,7 +94,7 @@ def looks_like_path(value):
         return False
     if value.startswith("-"):
         return False
-    return "/" in value or "." in Path(value).name or value in {"src", "configs", "config", "run.sh", "Dockerfile", "docker-compose.yml", "requirements.txt"}
+    return "/" in value or "." in Path(value).name or value in {"docs", "src", "include", "sdk", "third_party"}
 
 
 def discover_ros2_workspace(excludes):
@@ -247,7 +247,7 @@ def write_plugin_contract_draft(context_id, text):
         "runtime_image": first_context_value(text, ["runtime_image", "运行镜像"]),
         "capability_group_refs": refs,
         "supports_multi_instance": True,
-        "private_config": {"path": f"config/{adapter_type}.json", "schema_version": "1.0"},
+        "private_config": {"path": f"config/{adapter_type}.json", "schema_version": "1.0", "required": False},
         "target_build": {
             "build_in_runtime_container": True,
             "sdk_build_image": "registry.ghostcloud.cn/integration/hal_dev:v1.0",
@@ -320,38 +320,19 @@ def main():
     includes = []
     excludes = list(DEFAULT_EXCLUDES)
 
-    explicit_package = extract_after_markers(text, ["需要打包", "打包"])
-    if explicit_package:
-        includes.extend(explicit_package)
-
-    for marker_group in (
-        ["入口脚本", "入口", "entrypoint"],
-        ["Dockerfile"],
-        ["docker-compose"],
-        ["主要实现代码", "主要代码", "源码", "源代码"],
-        ["运行配置", "配置"],
-        ["Python 依赖", "依赖"],
-    ):
+    docs_root = Path(args.docs_dir)
+    if docs_root.exists():
+        includes.append(docs_root.as_posix())
+    for marker_group in (["相关文档", "文档目录", "资料目录"], ["SDK 路径", "SDK目录"]):
         includes.extend(extract_after_markers(text, marker_group))
 
     ros_packages, ros_package_files, ros_launch_files = discover_ros2_workspace(excludes)
     cpp_discovered, cpp_files, lib_files, build_files = discover_cpp_project(excludes)
     is_ros2_workspace = bool(ros_packages)
 
-    if is_ros2_workspace and "src" not in includes and Path("src").exists():
-        includes.append("src")
     for doc in sorted(Path(".").glob("*.md")):
         if not is_excluded(doc, excludes):
             includes.append(doc.as_posix())
-
-    if not includes:
-        for default in ["run.sh", "Dockerfile", "docker-compose.yml", "requirements.txt", "src", "configs"]:
-            if Path(default).exists():
-                includes.append(default)
-
-    for item in cpp_discovered:
-        if item not in includes:
-            includes.append(item)
 
     for raw in extract_after_markers(text, ["不要打包", "排除", "不打包"]):
         excludes.append(clean_path(raw))
@@ -361,39 +342,13 @@ def main():
     includes = [x for x in includes if looks_like_path(x)]
     includes = unique(includes)
 
-    device_paths = unique(re.findall(r"/dev/[A-Za-z0-9_.-]+", text))
-    host_match = re.search(r"(?:host|服务器|板子|远端).*?((?:\d{1,3}\.){3}\d{1,3})", text)
-    user_match = re.search(r"(?:用户|user)\s*(?:是|为|:|：)?\s*([A-Za-z0-9_.-]+)", text)
-    arch = "arm64" if re.search(r"arm64|aarch64|-arm", text, re.I) else "amd64" if re.search(r"x86|amd64", text, re.I) else "arm64"
-    wants_closed_loop_delivery = bool(
-        re.search(r"交付|完整.*包|直接运行|上板运行|板子.*运行|install\.sh|status\.sh|view\.sh|DEPLOY\.md|config\.env", text, re.I)
-    )
-    mino17_pusher_required = bool(re.search(r"mino17|infrared_push_50fps", text, re.I))
-
-    runtime_generated = []
-    has_cpp = bool(cpp_files)
-    for generated_name in ["Dockerfile", "docker-compose.yml", ".dockerignore", "run.sh"]:
-        if not Path(generated_name).exists():
-            runtime_generated.append(generated_name)
-            if generated_name not in includes:
-                includes.append(generated_name)
-    if wants_closed_loop_delivery:
-        for generated_name in ["config.env", "install.sh", "status.sh", "view.sh", "DEPLOY.md"]:
-            if not Path(generated_name).exists():
-                runtime_generated.append(generated_name)
-            if generated_name not in includes:
-                includes.append(generated_name)
-    if has_cpp and not is_ros2_workspace and not any(Path(name).exists() for name in ["CMakeLists.txt", "Makefile", "makefile"]):
-        runtime_generated.append("CMakeLists.txt")
-        if "CMakeLists.txt" not in includes:
-            includes.append("CMakeLists.txt")
-
     package_files, missing = expand_includes(includes, excludes)
-    blocking_missing = [item for item in missing if item not in runtime_generated]
 
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "context_id": args.context_id,
+        "delivery_mode": "runtime_plugin",
+        "purpose": "docs_and_source_evidence_inventory",
         "summary": text.strip().splitlines()[0][:200],
         "context_file": context_path.as_posix(),
         "docs": {
@@ -404,51 +359,16 @@ def main():
         "include": includes,
         "exclude": unique(excludes),
         "package_files_file": package_list_path.as_posix(),
-        "package_artifact": f"ops/artifacts/{args.context_id}_package.tar.gz",
-        "docker": {
-            "dockerfile": "Dockerfile" if Path("Dockerfile").exists() else None,
-            "compose_file": "docker-compose.yml" if Path("docker-compose.yml").exists() else None,
-            "image": args.context_id.replace("_", "-"),
-            "tag": "latest",
-            "default_arch": arch,
-            "saved_image": f"ops/artifacts/{args.context_id}_{arch}_image.tar",
-        },
-        "remote": {
-            "device_paths": device_paths,
-            "default_user": user_match.group(1) if user_match else "root",
-            "default_host": host_match.group(1) if host_match else None,
-            "remote_dir": f"/opt/device_adapter/{args.context_id}",
-        },
-        "run": {
-            "entrypoint": "run.sh" if "run.sh" in includes or Path("run.sh").exists() else None,
-            "test_timeout_seconds": 60,
-            "smoke_timeout_seconds": 20,
-            "success_markers": [],
-            "ros_launch": "hardware_abstraction_layer manager_node.launch.py" if any(p["name"] == "hardware_abstraction_layer" for p in ros_packages) else None,
-        },
-        "delivery": {
-            "closed_loop_package": wants_closed_loop_delivery,
-            "required_root_files": ["config.env", "install.sh", "run.sh", "status.sh", "view.sh", "DEPLOY.md"] if wants_closed_loop_delivery else [],
-            "required_runtime_files": [],
-        },
-        "build": {
-            "language": "cpp" if has_cpp else "unknown",
-            "build_system": "ros2_colcon" if is_ros2_workspace else "cmake" if has_cpp else "unknown",
-            "ros_distro": "humble" if is_ros2_workspace else None,
+        "source_inventory": {
             "ros_packages": ros_packages,
             "ros_launch_files": ros_launch_files,
             "source_files": cpp_files[:200],
             "library_files": lib_files[:200],
             "build_files": unique(build_files + ros_package_files)[:100],
-            "generated_runtime_files": runtime_generated,
-            "binary_name": args.context_id.replace("-", "_"),
-            "required_ros_executables": ["hardware_abstraction_layer/infrared_push_50fps"] if mino17_pusher_required else [],
-            "required_elf_executables": ["hardware_abstraction_layer/infrared_push_50fps"] if mino17_pusher_required else [],
         },
         "generated": {
-            "missing_paths": blocking_missing,
-            "runtime_generated_files": runtime_generated,
-            "package_file_count": len(package_files),
+            "missing_evidence_paths": missing,
+            "evidence_file_count": len(package_files),
         },
     }
 

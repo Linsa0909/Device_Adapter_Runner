@@ -11,7 +11,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from plugin_common import ARTIFACTS, CONTEXTS, load_contract, load_json, write_json
+from plugin_common import (ARTIFACTS, CONTEXTS, load_contract, load_json,
+                           load_platform_profile, write_json)
 
 
 LAYERS = ("load", "instance", "capability", "functional", "multi_instance")
@@ -20,6 +21,14 @@ REQUIRED_SCENARIOS = (
     "connect_disconnect_reconnect", "slowpath", "fastpath", "fault_injection",
     "lifecycle_cleanup", "multi_instance", "delayed_reload", "soak",
 )
+
+
+def acceptance_status(passed: bool, reserved_checks: list[dict[str, Any]]) -> str:
+    if not passed:
+        return "FAIL"
+    if any(str(item.get("status") or "").upper() == "BLOCKED" for item in reserved_checks):
+        return "BLOCKED"
+    return "PASS_WITH_NOT_RUN" if reserved_checks else "PASS"
 RUNTIME_FIELDS = ("project_dir", "manager_command", "deployment_file")
 
 
@@ -69,6 +78,33 @@ def docker_command(parts: list[str]) -> str:
     return " ".join(shlex.quote(str(part)) for part in parts)
 
 
+def runtime_profile_errors(ros: dict[str, Any]) -> list[str]:
+    profile = load_platform_profile()
+    expected = {
+        "domain_id": profile["ros_domain_id"],
+        "localhost_only": profile["ros_localhost_only"],
+        "rmw_implementation": profile["rmw_implementation"],
+    }
+    return [f"{key}: expected {value}, got {ros.get(key)}" for key, value in expected.items()
+            if ros.get(key) != value]
+
+
+def hardware_mounts(transports: dict[str, Any]) -> list[str]:
+    mounts: list[str] = []
+    for binding in transports.get("bindings", []):
+        profile = str(binding.get("profile_id") or "")
+        config = binding.get("config") if isinstance(binding.get("config"), dict) else {}
+        uses_usb = profile in {"usb", "uvc"} or (
+            profile == "vendor-sdk" and (
+                str(config.get("device_bus") or "").lower() == "usb"
+                or bool(config.get("vid") or config.get("pid"))
+            )
+        )
+        if uses_usb and "/dev/bus/usb:/dev/bus/usb" not in mounts:
+            mounts.append("/dev/bus/usb:/dev/bus/usb")
+    return mounts
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("context_id")
@@ -109,6 +145,7 @@ def main() -> int:
     if args.rmw_implementation is not None:
         ros_overrides["rmw_implementation"] = args.rmw_implementation
     ros = {**ros, **ros_overrides}
+    profile_errors = runtime_profile_errors(ros)
     missing_ros = [
         key for key in ("domain_id", "localhost_only", "rmw_implementation", "hal_interface_version")
         if key not in ros or ros.get(key) == ""
@@ -129,11 +166,12 @@ def main() -> int:
     cleanup_policy = str(runtime_test.get("cleanup_policy") or "keep_on_failure")
     if cleanup_policy not in {"always", "keep_on_failure", "never"}:
         missing_runtime.append("cleanup_policy(always|keep_on_failure|never)")
-    if missing_layers or invalid_layers or missing_ros or missing_runtime or missing_scenarios or invalid_scenarios:
+    if missing_layers or invalid_layers or missing_ros or missing_runtime or missing_scenarios or invalid_scenarios or profile_errors:
         write_json(report_path, {
             "status": "BLOCKED", "error_code": "ACCEPTANCE_CONTRACT_INCOMPLETE",
             "missing_layers": missing_layers, "invalid_layers": invalid_layers,
             "missing_ros_compatibility": missing_ros, "missing_runtime_test": missing_runtime,
+            "platform_profile_conflicts": profile_errors,
             "missing_scenarios": missing_scenarios, "invalid_scenarios": invalid_scenarios,
         })
         return 17
@@ -169,6 +207,8 @@ def main() -> int:
         "effective_runtime_test": runtime_test,
         "effective_ros_compatibility": ros,
     }
+    transports_path = CONTEXTS / f"{args.context_id}.transport_bindings.json"
+    transports = load_json(transports_path) if transports_path.is_file() else {}
 
     preflight = (
         f"test -f {shlex.quote(project_dir + '/install/setup.bash')} && "
@@ -193,12 +233,14 @@ def main() -> int:
     ]
     if runtime_test.get("privileged", True):
         service_parts.append("--privileged")
-    for mount in runtime_test.get("extra_mounts") or []:
+    effective_mounts = [*(runtime_test.get("extra_mounts") or []), *hardware_mounts(transports)]
+    for mount in dict.fromkeys(effective_mounts):
         if isinstance(mount, str) and mount:
             service_parts.extend(("-v", mount))
     service_shell = (
         "set -euo pipefail; "
         f"source {shlex.quote(ros_setup)}; source {shlex.quote(workspace_setup)}; "
+        f"export LD_LIBRARY_PATH={shlex.quote(runtime_mount + '/deps')}:${{LD_LIBRARY_PATH:-}}; "
         f"exec {manager_command}"
     )
     service_parts.extend((image, "bash", "-lc", service_shell))
@@ -210,6 +252,7 @@ def main() -> int:
             f"deadline=$((SECONDS+{startup_timeout})); "
             f"while [ $SECONDS -lt $deadline ]; do "
             f"[ \"$(docker inspect -f '{{{{.State.Running}}}}' {shlex.quote(service_name)} 2>/dev/null)\" = true ] && break; sleep 1; done; "
+            f"test \"$(docker inspect -f '{{{{.State.Running}}}}' {shlex.quote(service_name)} 2>/dev/null)\" = true; "
             f"docker inspect -f 'network={{{{.HostConfig.NetworkMode}}}} ipc={{{{.HostConfig.IpcMode}}}}' {shlex.quote(service_name)} "
             "| grep -qx 'network=host ipc=host'; "
             f"docker inspect -f '{{{{range .Config.Env}}}}{{{{println .}}}}{{{{end}}}}' {shlex.quote(service_name)} "
@@ -285,8 +328,9 @@ def main() -> int:
         "local_file": str(log_path), "bytes": len(service_logs.encode("utf-8")),
     }
 
+    preliminary_status = acceptance_status(passed, blocked_checks)
     remove_service = cleanup_policy == "always" or (
-        cleanup_policy == "keep_on_failure" and passed and not blocked_checks
+        cleanup_policy == "keep_on_failure" and preliminary_status in {"PASS", "PASS_WITH_NOT_RUN"}
     )
     cleanup_result: dict[str, Any] = {"policy": cleanup_policy, "removed": False}
     if remove_service:
@@ -298,12 +342,12 @@ def main() -> int:
             passed = False
     results["cleanup"] = cleanup_result
 
-    final_status = "FAIL" if not passed else ("BLOCKED" if blocked_checks else "PASS")
+    final_status = acceptance_status(passed, blocked_checks)
     write_json(report_path, {
         "schema_version": "1.0", "context_id": args.context_id,
         "status": final_status,
-        "error_code": "" if final_status == "PASS" else (
-            "REMOTE_ACCEPTANCE_NOT_RUN" if final_status == "BLOCKED" else "REMOTE_PLUGIN_ACCEPTANCE_FAILED"
+        "error_code": "" if final_status in {"PASS", "PASS_WITH_NOT_RUN"} else (
+            "REMOTE_ACCEPTANCE_BLOCKED" if final_status == "BLOCKED" else "REMOTE_PLUGIN_ACCEPTANCE_FAILED"
         ),
         "host": args.host, "adapter_type": adapter, "runtime_image": image,
         "service_container": service_name, "client_container": client_name,
@@ -317,7 +361,7 @@ def main() -> int:
         "status": "PASS" if load_pass else "FAIL", "checks": load_checks,
         "service_container": service_name,
     })
-    return 0 if final_status == "PASS" else (17 if final_status == "BLOCKED" else 18)
+    return 0 if final_status in {"PASS", "PASS_WITH_NOT_RUN"} else (17 if final_status == "BLOCKED" else 18)
 
 
 if __name__ == "__main__":

@@ -32,18 +32,39 @@ class V4ComplianceTests(unittest.TestCase):
             "sdk_root": "sdk", "sdk_version": "2.0.0", "sdk_abi": 2,
             "plugin_abi": 1, "target_arch": "aarch64", "target_platform": "RK3588",
             "target_os": "ubuntu22.04", "compiler_triplet": "aarch64-linux-gnu-gcc",
-            "runtime_image": "hal:tested", "capability_group_refs": ["camera"],
+            "runtime_image": "hal:tested", "capability_group_refs": ["generic_status"],
             "supports_multi_instance": True, "plugin_source_dir": "adapter_plugins/demo",
             "package_dir": "build/demo-package",
-            "private_config": {"path": "config/demo.json", "schema_version": "1.0"},
+            "private_config": {"path": "config/demo.json", "schema_version": "1.0", "required": True},
             "target_build": {"build_in_runtime_container": True},
         }
         (self.root / "ops/contexts/demo.plugin_contract.json").write_text(json.dumps(contract))
         (self.root / "ops/contexts/demo.device_spec.json").write_text(json.dumps({
             "adapter_type": "demo",
             "device_model": {"schema_version": "2.0", "profile": {"adapter_type": "demo"},
-                             "capability_groups": [{"group_id": "camera", "enabled": True}]},
+                             "capability_groups": [{"group_id": "generic_status", "enabled": True}]},
             "private_config": {"schema_version": "1.0", "instances": [{"instance_index": 0, "enabled": True}]},
+        }))
+        (self.root / "ops/contexts/demo.capability_mapping.json").write_text(json.dumps({
+            "status": "PASS",
+            "mapping_policy": "context_evidence_only",
+            "mappings": [{
+                "feature_id": "read_state",
+                "group_id": "generic_status",
+                "hal_entries": [{"kind": "property", "id": "state"}],
+                "implementation_evidence": ["context: state API"],
+                "source_evidence": ["manual section 1"],
+                "tests": ["state_read"],
+            }],
+            "unmapped_features": [],
+        }))
+        (self.root / "ops/contexts/demo.transport_bindings.json").write_text(json.dumps({
+            "status": "PASS",
+            "bindings": [{
+                "binding_id": "primary", "profile_id": "vendor-sdk",
+                "config": {"discovery": "auto"}, "missing_context": [],
+            }],
+            "gaps": [],
         }))
 
     def tearDown(self) -> None:
@@ -58,6 +79,17 @@ class V4ComplianceTests(unittest.TestCase):
         self.assertIn("CXX_VISIBILITY_PRESET hidden", cmake)
         self.assertIn("install(FILES config/demo.json", cmake)
 
+    def test_adapt_omits_private_config_when_contract_does_not_enable_it(self) -> None:
+        path = self.root / "ops/contexts/demo.plugin_contract.json"
+        contract = json.loads(path.read_text())
+        contract["private_config"] = {"path": "config/demo.json", "schema_version": "1.0", "required": False}
+        path.write_text(json.dumps(contract))
+        result = run("adapt_hal_device.py", "demo", cwd=self.root)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        plugin = self.root / "adapter_plugins/demo"
+        self.assertFalse((plugin / "config/demo.json").exists())
+        self.assertNotIn("install(FILES config/demo.json", (plugin / "CMakeLists.txt").read_text())
+
     def test_formal_package_requires_and_contains_private_config(self) -> None:
         package = self.root / "build/demo-package"
         for directory in ("adapters", "config", "deps", "model/devices"):
@@ -65,7 +97,7 @@ class V4ComplianceTests(unittest.TestCase):
         (package / "adapters/libhal_adapter_demo.so").write_text("binary")
         (package / "config/demo.json").write_text('{"schema_version":"1.0","instances":[]}')
         (package / "model/devices/demo.device.yaml").write_text("profile:\n  adapter_type: demo\n")
-        (package / "README.md").write_text("demo")
+        (package / "README.md").write_text("HAL Adapter SDK / ABI: `2.0.0` / `2`\n")
         result = run("package_plugin.py", "demo", cwd=self.root)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         with tarfile.open(self.root / "ops/artifacts/demo_adapter_plugin.tar.gz") as archive:
@@ -175,9 +207,20 @@ class V4ComplianceTests(unittest.TestCase):
             source.write_text("int demo = 2;\n")
             third, _ = module.source_fingerprint("demo")
             self.assertNotEqual(second, third)
+            mapping = self.root / "ops/contexts/demo.capability_mapping.json"
+            payload = json.loads(mapping.read_text())
+            payload["mappings"][0]["feature_id"] = "read_state_v2"
+            mapping.write_text(json.dumps(payload))
+            fourth, included_contracts = module.source_fingerprint("demo")
+            self.assertNotEqual(third, fourth)
+            self.assertIn("ops/contexts/demo.capability_mapping.json", included_contracts)
         finally:
             os.chdir(previous)
             sys.modules.pop(spec.name, None)
+
+    def test_quality_fingerprint_handles_wsl_git_ownership_without_global_config(self) -> None:
+        source = (SCRIPTS / "quality_gate.py").read_text()
+        self.assertIn("safe.directory=", source)
 
     def test_remote_acceptance_has_fixed_v4_scenarios(self) -> None:
         script = (SCRIPTS / "test_plugin_remote.py").read_text()
@@ -202,18 +245,16 @@ class V4ComplianceTests(unittest.TestCase):
 
     def test_model_stage5_requires_a_real_deployment_plan(self) -> None:
         orchestrator = (SCRIPTS / "stage_orchestrator.py").read_text()
-        stage_map = json.loads((SCRIPTS / "agent_stage_map.json").read_text())
+        workflow = json.loads((SCRIPTS / "workflow_definition.json").read_text())
         expected = "ops/contexts/{context_id}.deployment_plan.json"
-        stage5_block = orchestrator.split('"stage5_deployment_plan": Stage(', 1)[1].split("),", 1)[0]
-        self.assertIn(expected, stage5_block)
-        self.assertNotIn("device_spec.json", stage5_block)
         self.assertEqual(
-            stage_map["stage5_deployment_plan"]["outputs"],
+            workflow["stages"]["stage5_deployment_plan"]["required_outputs"],
             [
-                "ops/contexts/<context_id>.deployment_plan.json",
-                "ops/contexts/<context_id>.deployment.yaml",
+                "ops/contexts/{context_id}.deployment_plan.json",
+                "ops/contexts/{context_id}.deployment.yaml",
             ],
         )
+        self.assertIn(expected, workflow["stages"]["stage5_deployment_plan"]["required_outputs"])
         self.assertIn('"stage5_deployment_plan"', orchestrator)
         self.assertIn('"generate_deployment_plan.py"', orchestrator)
 
@@ -238,6 +279,14 @@ class V4ComplianceTests(unittest.TestCase):
         self.assertEqual(plan["acceptance_checks"]["multi_instance"][0]["status"], "NOT_RUN")
         deployment = self.root / "ops/contexts/demo.deployment.yaml"
         self.assertIn("adapter_type: demo", deployment.read_text())
+
+    def test_deployment_plan_reuses_remote_sdk_workspace_without_manual_project_dir(self) -> None:
+        report = self.root / "ops/artifacts/demo.target_sdk_package.json"
+        report.write_text(json.dumps({"status": "PASS", "remote_run": "/tmp/device-adapter/demo/hash"}))
+        result = run("generate_deployment_plan.py", "demo", cwd=self.root)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        plan = json.loads((self.root / "ops/contexts/demo.deployment_plan.json").read_text())
+        self.assertEqual(plan["runtime_test"]["project_dir"], "/tmp/device-adapter/demo/hash")
 
     def test_remote_deploy_installs_single_device_deployment_yaml(self) -> None:
         script = (SCRIPTS / "deploy_plugin.py").read_text()

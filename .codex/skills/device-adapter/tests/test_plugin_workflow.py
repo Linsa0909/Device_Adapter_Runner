@@ -53,7 +53,7 @@ class PluginWorkflowTests(unittest.TestCase):
             "runtime_image": "hal:test",
             "capability_group_refs": ["camera"],
             "supports_multi_instance": True,
-            "private_config": {"path": "config/demo.json", "schema_version": "1.0"},
+            "private_config": {"path": "config/demo.json", "schema_version": "1.0", "required": True},
             "target_build": {"build_in_runtime_container": True},
             "plugin_source_dir": "adapter_plugins/demo",
             "package_dir": "build/demo-package",
@@ -100,6 +100,9 @@ class PluginWorkflowTests(unittest.TestCase):
     def add_private_config(self, package: Path) -> None:
         (package / "config").mkdir(parents=True, exist_ok=True)
         (package / "config/demo.json").write_text('{"schema_version":"1.0","instances":[]}')
+
+    def add_readme(self, package: Path) -> None:
+        (package / "README.md").write_text("HAL Adapter SDK / ABI: `1.1.0` / `1`\n")
 
     def add_source_contract_evidence(self) -> None:
         source = self.root / "adapter_plugins/demo/src/demo_adapter.cpp"
@@ -339,7 +342,7 @@ class PluginWorkflowTests(unittest.TestCase):
         (package / "adapters/libhal_adapter_demo.so").write_text("binary")
         (package / "model/devices/demo.device.yaml").write_text("profile:\n  adapter_type: demo\n")
         (package / "model/capability_groups/camera.capability.yaml").write_text("id: camera\n")
-        (package / "README.md").write_text("demo\n")
+        self.add_readme(package)
         self.add_private_config(package)
         result = run_script("package_plugin.py", "demo", cwd=self.root)
         self.assertNotEqual(result.returncode, 0)
@@ -355,7 +358,7 @@ class PluginWorkflowTests(unittest.TestCase):
         (package / "adapters/libhal_adapter_demo.so").write_text("binary")
         (package / "deps/config.ini").write_text("not a shared library")
         (package / "model/devices/demo.device.yaml").write_text("profile:\n  adapter_type: demo\n")
-        (package / "README.md").write_text("demo\n")
+        self.add_readme(package)
         self.add_private_config(package)
         result = run_script("package_plugin.py", "demo", cwd=self.root)
         self.assertNotEqual(result.returncode, 0)
@@ -370,7 +373,7 @@ class PluginWorkflowTests(unittest.TestCase):
         (package / "deps/libvendor_demo.so.1").write_text("dependency")
         (package / "deps/libvendor_demo.so").symlink_to("libvendor_demo.so.1")
         (package / "model/devices/demo.device.yaml").write_text("profile:\n  adapter_type: demo\n")
-        (package / "README.md").write_text("demo\n")
+        self.add_readme(package)
         self.add_private_config(package)
         result = run_script("package_plugin.py", "demo", cwd=self.root)
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
@@ -382,6 +385,37 @@ class PluginWorkflowTests(unittest.TestCase):
             "config/demo.json", "deps/libvendor_demo.so.1", "model/devices/demo.device.yaml",
         })
         self.assertTrue(members["deps/libvendor_demo.so"].issym())
+
+    def test_package_allows_missing_optional_private_config(self) -> None:
+        self.write_contract(private_config={"path": "config/demo.json", "required": False})
+        package = self.root / "build/demo-package"
+        (package / "adapters").mkdir(parents=True)
+        (package / "model/devices").mkdir(parents=True)
+        (package / "adapters/libhal_adapter_demo.so").write_text("binary")
+        (package / "model/devices/demo.device.yaml").write_text("profile:\n  adapter_type: demo\n")
+        self.add_readme(package)
+
+        result = run_script("package_plugin.py", "demo", cwd=self.root)
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        with tarfile.open(self.root / "ops/artifacts/demo_adapter_plugin.tar.gz") as archive:
+            self.assertNotIn("config/demo.json", archive.getnames())
+
+    def test_package_rejects_readme_without_matching_sdk_version_and_abi(self) -> None:
+        self.write_contract(private_config={"required": False})
+        package = self.root / "build/demo-package"
+        (package / "adapters").mkdir(parents=True)
+        (package / "model/devices").mkdir(parents=True)
+        (package / "adapters/libhal_adapter_demo.so").write_text("binary")
+        (package / "model/devices/demo.device.yaml").write_text("profile:\n  adapter_type: demo\n")
+        (package / "README.md").write_text("SDK details unavailable\n")
+
+        result = run_script("package_plugin.py", "demo", cwd=self.root)
+
+        self.assertNotEqual(result.returncode, 0)
+        report = json.loads((self.root / "ops/artifacts/demo.readme_validation.json").read_text())
+        self.assertEqual(report["status"], "FAIL")
+        self.assertEqual(len(report["errors"]), 2)
 
     @unittest.skipUnless(shutil.which("cc") and shutil.which("readelf") and shutil.which("nm"), "native ELF tools required")
     def test_plugin_verify_checks_symbols_arch_and_rpath(self) -> None:
@@ -412,7 +446,7 @@ class PluginWorkflowTests(unittest.TestCase):
             "schema_version: '2.0'\nprofile:\n  adapter_type: demo\n"
             "capability_groups:\n  - group_id: camera\n    enabled: true\n"
         )
-        (package / "README.md").write_text("demo\n")
+        self.add_readme(package)
         self.add_private_config(package)
         self.add_source_contract_evidence()
         (self.root / "ops/artifacts/demo.multi_instance_test.json").write_text(json.dumps({
@@ -450,7 +484,7 @@ class PluginWorkflowTests(unittest.TestCase):
             "-o", str(package / "adapters/libhal_adapter_demo.so"),
         ], check=True)
         (package / "model/devices/demo.device.yaml").write_text("profile:\n  adapter_type: demo\n")
-        (package / "README.md").write_text("demo\n")
+        self.add_readme(package)
         self.add_private_config(package)
         self.add_source_contract_evidence()
         result = run_script("verify_plugin.py", "demo", cwd=self.root)

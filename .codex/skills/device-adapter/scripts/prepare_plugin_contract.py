@@ -86,7 +86,7 @@ def main() -> int:
         "compiler_triplet": "aarch64-linux-gnu-gcc",
         "target_build": target_build,
         "private_config": contract.get("private_config") or {
-            "path": f"config/{contract['adapter_type']}.json", "schema_version": "1.0"
+            "path": f"config/{contract['adapter_type']}.json", "schema_version": "1.0", "required": False
         },
     })
     resolved = {"sdk_root", "platform_source_root", "platform_install_prefix", "sdk_output_dir", "sdk_version", "sdk_abi", "plugin_abi"}

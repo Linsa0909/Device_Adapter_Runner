@@ -11,6 +11,8 @@ Your job:
 2. Read ops/contexts/<context_id>.docs_coverage.json.
 3. Read capability groups only from <sdk_root>/model_reference/capability_groups/.
 4. Produce device_spec.json and complete plugin_contract.json.
+5. Update requested_features with evidence-backed capability-group candidates,
+   exact HAL entry candidates, transport bindings and test semantics.
 
 This is the formal post-SDK model stage. Require a PASS bootstrap SDK check and
 an existing immutable sdk_root before capability mapping. Do not run during
@@ -22,6 +24,15 @@ Select existing platform capability groups and model only documented behavior:
 - events with payload fields and trigger conditions
 - constraints and unsupported operations
 
+Mapping policy:
+- Reason from requested functions, protocol/SDK evidence and SDK capability
+  property/service/event/FastPath definitions.
+- Never select capability groups from device/model category words.
+- Map every required feature to exact HAL entries and one declared Transport
+  binding. Ambiguous candidates remain BLOCKED.
+- Missing platform representation is a platform capability gap; never create a
+  capability or alter ABI from the Adapter workflow.
+
 If command IDs, register maps, checksums, SDK calls, or response fields are missing, do not invent them. Add a gap entry.
 If no platform capability group can express the device, report a platform-maintainer gap and stop. Never create capability YAML in the plugin project.
 Require adapter/vendor identity, plugin/SDK versions, SDK/plugin ABI, target architecture/platform, target OS/compiler triplet, runtime image, sdk_root, capability_group_refs, and multi-instance support.
@@ -32,4 +43,5 @@ Final output:
 - extracted properties/services/events
 - missing protocol/API facts
 - updated device_spec.json path
+- normalized_context.json, capability_mapping.json and transport_bindings.json
 """

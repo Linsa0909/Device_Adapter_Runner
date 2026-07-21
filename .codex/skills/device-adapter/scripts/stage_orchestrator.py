@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Stage orchestration for the device-adapter skill.
 
-The orchestrator intentionally does not pretend that deterministic Python can
-perform LLM-only work such as reading manuals and generating adapter code. For
-agent-owned stages it verifies the expected handoff artifact and fails with a
-precise stage if the artifact is missing. Deterministic stages call the existing
-scripts and preserve their stage markers.
+The orchestrator owns deterministic execution and emits explicit handoff
+contracts for reasoning stages. The Codex skill consumes those handoffs in the
+same user command, runs the bounded Agent role, and resumes this state machine.
 """
 
 from __future__ import annotations
@@ -13,8 +11,10 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import hashlib
+import importlib.util
 import json
 import os
+import shlex
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -29,8 +29,11 @@ ARTIFACTS = Path("ops/artifacts")
 LOGS = ARTIFACTS / "logs"
 CURRENT_CONTEXT_ID = ""
 CURRENT_LOG_FILE: Path | None = None
+CURRENT_ACTION = ""
+CURRENT_EXTRA: list[str] = []
 STAGE_START_TIMES: dict[str, datetime] = {}
 STAGE_OUTPUTS: dict[str, list[str]] = {}
+WAITING_FOR_AGENT = 24
 
 ACTION_AUTHORIZATION: dict[str, list[str]] = {
     "model": ["ops/contexts/**", "ops/artifacts/**"],
@@ -68,261 +71,58 @@ def record_command_authorization(action: str, context_id: str, extra: list[str])
 class Stage:
     name: str
     owner: str
+    kind: str = "deterministic"
+    inputs: tuple[str, ...] = ()
     outputs: tuple[str, ...] = ()
+    write_roots: tuple[str, ...] = ()
+    deny_roots: tuple[str, ...] = ()
+    diff_budget: tuple[tuple[str, int], ...] = ()
     next_action: str = ""
 
 
-STAGES: dict[str, Stage] = {
-    "stage0_env_check": Stage("stage0_env_check", "stage_orchestrator.py"),
-    "stage1_context_intake": Stage(
-        "stage1_context_intake",
-        "context-mapper",
-        ("ops/contexts/{context_id}.context.md", "ops/contexts/{context_id}.manifest.json"),
-        "Run /device-adapter context {context_id}",
-    ),
-    "stage2_docs_inventory": Stage(
-        "stage2_docs_inventory",
-        "docs-intake-agent",
-        ("ops/contexts/{context_id}.docs_inventory.json",),
-        "Run the docs-intake-agent for /device-adapter model {context_id}",
-    ),
-    "stage2_docs_extract": Stage(
-        "stage2_docs_extract",
-        "extract_docs.py",
-        ("ops/artifacts/docs/{context_id}/extraction_report.json",),
-        "Rerun /device-adapter context {context_id} after installing PDF/OCR prerequisites",
-    ),
-    "stage3_docs_coverage": Stage(
-        "stage3_docs_coverage",
-        "docs-intake-agent",
-        ("ops/contexts/{context_id}.docs_coverage.json",),
-        "Run the docs-intake-agent coverage pass for /device-adapter model {context_id}",
-    ),
-    "stage4_functional_chain_check": Stage(
-        "stage4_functional_chain_check",
-        "acceptance-planner-agent",
-        (
-            "ops/contexts/{context_id}.functional_chain.json",
-            "ops/contexts/{context_id}.dependency_checklist.json",
-            "ops/artifacts/{context_id}.dependency_gaps.md",
-        ),
-        "Run acceptance-planner-agent or functional_chain_check.py to complete the device functional-chain checklist",
-    ),
-    "stage4_capability_model": Stage(
-        "stage4_capability_model",
-        "capability-modeler-agent",
-        ("ops/contexts/{context_id}.device_spec.json",),
-        "Run capability-modeler-agent and write ops/contexts/{context_id}.device_spec.json",
-    ),
-    "stage4a_sdk_contract_prepare": Stage(
-        "stage4a_sdk_contract_prepare",
-        "prepare_plugin_contract.py",
-        ("ops/contexts/{context_id}.plugin_contract.json",),
-        "Run /device-adapter model-prep {context_id}",
-    ),
-    "stage4b_plugin_contract": Stage(
-        "stage4b_plugin_contract",
-        "capability-modeler-agent",
-        ("ops/contexts/{context_id}.plugin_contract.json",),
-        "Complete the runtime plugin contract from the target SDK and runtime image",
-    ),
-    "stage5_deployment_plan": Stage(
-        "stage5_deployment_plan",
-        "deployment-planner-agent",
-        (
-            "ops/contexts/{context_id}.deployment_plan.json",
-            "ops/contexts/{context_id}.deployment.yaml",
-        ),
-        "Generate the deployment plan and single-device deployment YAML",
-    ),
-    "stage6_dependency_audit": Stage(
-        "stage6_dependency_audit",
-        "sdk-dependency-auditor-agent",
-        ("ops/contexts/{context_id}.device_spec.json",),
-        "Run sdk-dependency-auditor-agent or provide runtime_requirements in device_spec.json",
-    ),
-    "stage6a_sdk_package": Stage(
-        "stage6a_sdk_package",
-        "sdk-packager-agent",
-        ("ops/artifacts/{context_id}.sdk_package.json",),
-        "Run /device-adapter sdk-package {context_id}",
-    ),
-    "stage6a_target_hal_build": Stage(
-        "stage6a_target_hal_build",
-        "sdk-packager-agent",
-        ("ops/artifacts/{context_id}.target_sdk_package.json",),
-        "Run /device-adapter target-sdk-package {context_id}",
-    ),
-    "stage6a_sdk_check": Stage(
-        "stage6a_sdk_check",
-        "sdk-dependency-auditor-agent",
-        ("ops/contexts/{context_id}.sdk_inventory.json", "ops/artifacts/{context_id}.sdk_check.json"),
-        "Run /device-adapter sdk-check {context_id}",
-    ),
-    "stage6b_sdk_validate": Stage(
-        "stage6b_sdk_validate",
-        "sdk-packager-agent",
-        ("ops/artifacts/{context_id}.sdk_validation.json",),
-        "Build the SDK minimal Adapter example on the target architecture",
-    ),
-    "stage7_spec_validate": Stage(
-        "stage7_spec_validate",
-        "spec-validator-agent",
-        ("ops/contexts/{context_id}.device_spec.json",),
-        "Fix ops/contexts/{context_id}.device_spec.json",
-    ),
-    "stage8_yaml_generate": Stage(
-        "stage8_yaml_generate",
-        "adapt_hal_device.py",
-        next_action="Run /device-adapter adapt {context_id}",
-    ),
-    "stage10_adapter_codegen": Stage(
-        "stage10_adapter_codegen",
-        "hal-adapter-builder",
-        next_action="Run hal-adapter-builder with --allow-code or report adapter code gaps",
-    ),
-    "stage10a_tdd_evidence": Stage(
-        "stage10a_tdd_evidence",
-        "hal-adapter-builder",
-        ("ops/artifacts/{context_id}.tdd_report.json",),
-        "Run test-driven-development during adapt and record RED/GREEN evidence",
-    ),
-    "stage10b_runtime_materialize": Stage(
-        "stage10b_runtime_materialize",
-        "device-adapter-runtime",
-        next_action="Rerun /device-adapter adapt {context_id} before review and approval",
-    ),
-    "stage10c_plugin_build": Stage(
-        "stage10c_plugin_build",
-        "plugin-builder-agent",
-        ("ops/artifacts/{context_id}.plugin_build.json",),
-        "Run /device-adapter plugin-build {context_id}",
-    ),
-    "stage11_plugin_verify": Stage(
-        "stage11_plugin_verify",
-        "verification-agent",
-        ("ops/artifacts/{context_id}.abi_validation.json", "ops/artifacts/{context_id}.dependency_closure.json"),
-        "Run /device-adapter verify {context_id}",
-    ),
-    "stage11a_independent_verification": Stage(
-        "stage11a_independent_verification",
-        "verification-agent",
-        ("ops/artifacts/{context_id}.verification_report.json",),
-        "Run verification-agent with verification-before-completion",
-    ),
-    "stage11b_cpp_review": Stage(
-        "stage11b_cpp_review",
-        "verification-agent",
-        ("ops/artifacts/{context_id}.c_review_report.json",),
-        "Run c-review for C/C++ scope",
-    ),
-    "stage11c_differential_review": Stage(
-        "stage11c_differential_review",
-        "verification-agent",
-        ("ops/artifacts/{context_id}.differential_review_report.json",),
-        "Run differential-review for the current change set",
-    ),
-    "stage11d_human_approval": Stage(
-        "stage11d_human_approval",
-        "human",
-        ("ops/artifacts/{context_id}.human_approval.json",),
-        "Run /device-adapter approve {context_id} --by <name>",
-    ),
-    "stage12_package_manifest": Stage("stage12_package_manifest", "package_by_manifest.py"),
-    "stage13_package_verify": Stage("stage13_package_verify", "verify_package.py"),
-    "stage14_docker_build_x86_optional": Stage("stage14_docker_build_x86_optional", "docker_package.sh"),
-    "stage15_docker_build_arm64": Stage("stage15_docker_build_arm64", "docker_package.sh"),
-    "stage16_image_verify": Stage("stage16_image_verify", "docker_package.sh"),
-    "stage17_remote_transfer": Stage("stage17_remote_transfer", "remote_deploy.sh"),
-    "stage18_remote_prepare": Stage("stage18_remote_prepare", "remote_deploy.sh"),
-    "stage19_remote_device_probe": Stage("stage19_remote_device_probe", "remote_test.sh"),
-    "stage20_remote_run": Stage("stage20_remote_run", "remote_test.sh"),
-    "stage21_remote_test": Stage("stage21_remote_test", "remote_test.sh"),
-    "stage22_collect_logs": Stage("stage22_collect_logs", "remote_test.sh"),
-    "stage23_failure_classification": Stage("stage23_failure_classification", "failure-debugger"),
-}
-
-
-def load_workflow_stages() -> dict[str, Stage]:
-    """Load v5 stage ownership and outputs from the single workflow contract."""
+def load_workflow_definition() -> dict[str, Any]:
     path = SCRIPT_DIR / "workflow_definition.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
     definitions = payload.get("stages")
     if not isinstance(definitions, dict):
         raise RuntimeError("workflow_definition.json must contain a stages object")
-    result: dict[str, Stage] = {}
+    actions = payload.get("actions")
+    if not isinstance(actions, dict):
+        raise RuntimeError("workflow_definition.json must contain an actions object")
     for name, item in definitions.items():
         dependencies = item.get("depends_on", [])
         if not isinstance(dependencies, list) or any(value not in definitions for value in dependencies):
             raise RuntimeError(f"invalid workflow dependencies for {name}")
         if not item.get("owner") or "write_roots" not in item or "deny_roots" not in item:
             raise RuntimeError(f"incomplete workflow boundary for {name}")
-        result[name] = Stage(name, str(item["owner"]), tuple(item.get("required_outputs", [])),
-                             str(item.get("failure_action") or ""))
+    for action, stage_names in actions.items():
+        if not isinstance(stage_names, list) or any(value not in definitions for value in stage_names):
+            raise RuntimeError(f"invalid workflow action sequence for {action}")
+    return payload
+
+
+def load_workflow_stages(definition: dict[str, Any]) -> dict[str, Stage]:
+    result: dict[str, Stage] = {}
+    for name, item in definition["stages"].items():
+        budget = item.get("diff_budget") or {}
+        result[name] = Stage(
+            name=name,
+            owner=str(item["owner"]),
+            kind=str(item.get("kind") or "deterministic"),
+            inputs=tuple(item.get("required_inputs") or ()),
+            outputs=tuple(item.get("required_outputs") or ()),
+            write_roots=tuple(item.get("write_roots") or ()),
+            deny_roots=tuple(item.get("deny_roots") or ()),
+            diff_budget=tuple((str(key), int(value)) for key, value in budget.items()),
+            next_action=str(item.get("failure_action") or ""),
+        )
     return result
 
 
-# V5 stages are authoritative. Legacy aliases remain temporarily so existing
-# commands can migrate without losing historical failure/resume compatibility.
-STAGES.update(load_workflow_stages())
-
-
-MODEL_STAGES = (
-    "stage0_env_check",
-    "stage1_context_intake",
-    "stage2_docs_inventory",
-    "stage2_docs_extract",
-    "stage3_docs_coverage",
-    "stage4_functional_chain_check",
-    "stage4_capability_model",
-    "stage4b_plugin_contract",
-    "stage5_deployment_plan",
-    "stage6_dependency_audit",
-    "stage7_spec_validate",
-)
-
-
-RERUN_STARTS = {
-    "stage0_env_check": "model",
-    "stage1_context_intake": "model",
-    "stage2_docs_inventory": "model",
-    "stage2_docs_extract": "model",
-    "stage3_docs_coverage": "model",
-    "stage4_functional_chain_check": "model",
-    "stage4_capability_model": "model",
-    "stage4a_sdk_contract_prepare": "model-prep",
-    "stage4b_plugin_contract": "model",
-    "stage5_deployment_plan": "model",
-    "stage6_dependency_audit": "verify",
-    "stage6a_sdk_package": "sdk-package",
-    "stage6a_target_hal_build": "target-sdk-package",
-    "stage6a_sdk_check": "sdk-check",
-    "stage6b_sdk_validate": "sdk-check",
-    "stage7_spec_validate": "verify",
-    "stage8_yaml_generate": "adapt",
-    "stage10_adapter_codegen": "adapt",
-    "stage10a_tdd_evidence": "adapt",
-    "stage10b_runtime_materialize": "adapt",
-    "stage10c_plugin_build": "plugin-build",
-    "stage10c_target_plugin_build": "target-plugin-build",
-    "stage11_plugin_verify": "verify",
-    "stage11a_independent_verification": "verify",
-    "stage11b_cpp_review": "verify",
-    "stage11c_differential_review": "verify",
-    "stage11d_human_approval": "approve",
-    "stage12_package_manifest": "package",
-    "stage13_package_verify": "package",
-    "stage14_docker_build_x86_optional": "docker-package",
-    "stage15_docker_build_arm64": "docker-package",
-    "stage16_image_verify": "docker-package",
-    "stage17_remote_transfer": "deploy",
-    "stage18_remote_prepare": "deploy",
-    "stage19_remote_device_probe": "test",
-    "stage20_remote_run": "test",
-    "stage21_remote_test": "test",
-    "stage22_collect_logs": "test",
-    "stage23_failure_classification": "test",
-}
+WORKFLOW = load_workflow_definition()
+STAGES = load_workflow_stages(WORKFLOW)
+MODEL_STAGES = tuple(WORKFLOW["actions"]["model"])
+RERUN_STARTS = {name: stage.next_action for name, stage in STAGES.items() if stage.next_action}
 
 
 def marker(stage: str, status: str, exit_code: int | None = None) -> None:
@@ -349,9 +149,11 @@ def log_file_for(context_id: str) -> Path:
 
 
 def init_logging(context_id: str, action: str, extra: list[str]) -> None:
-    global CURRENT_CONTEXT_ID, CURRENT_LOG_FILE
+    global CURRENT_CONTEXT_ID, CURRENT_LOG_FILE, CURRENT_ACTION, CURRENT_EXTRA
     CURRENT_CONTEXT_ID = context_id
     CURRENT_LOG_FILE = log_file_for(context_id)
+    CURRENT_ACTION = action
+    CURRENT_EXTRA = list(extra)
     CURRENT_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     with CURRENT_LOG_FILE.open("a", encoding="utf-8") as fh:
         fh.write("\n")
@@ -589,32 +391,126 @@ def checkpoint(context_id: str, stage_name: str, outputs: list[str] | None = Non
                 fh.write(f"{stage_name} -> {item}\n")
 
 
+def adapter_type_for(context_id: str) -> str:
+    path = CONTEXTS / f"{context_id}.plugin_contract.json"
+    if path.is_file():
+        try:
+            value = json.loads(path.read_text(encoding="utf-8")).get("adapter_type")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        except (OSError, json.JSONDecodeError):
+            pass
+    return context_id.lower().replace("-", "_")
+
+
+def format_stage_value(template: str, context_id: str) -> str:
+    return template.format(context_id=context_id, adapter_type=adapter_type_for(context_id))
+
+
 def fmt_output(template: str, context_id: str) -> Path:
-    return Path(template.format(context_id=context_id))
+    return Path(format_stage_value(template, context_id))
 
 
-def ensure_outputs(context_id: str, stage_name: str) -> bool:
+def current_source_fingerprint(context_id: str) -> str:
+    spec = importlib.util.spec_from_file_location(
+        "_device_adapter_quality_gate", SCRIPT_DIR / "quality_gate.py"
+    )
+    if spec is None or spec.loader is None:
+        return ""
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.ARTIFACTS = ARTIFACTS
+    return str(module.source_fingerprint(context_id)[0])
+
+
+def stale_agent_outputs(context_id: str, stage: Stage) -> list[str]:
+    if stage.name not in {
+        "stage11a_independent_verification", "stage11b_cpp_review",
+        "stage11c_differential_review",
+    }:
+        return []
+    fingerprint = current_source_fingerprint(context_id)
+    stale: list[str] = []
+    for template in stage.outputs:
+        path = fmt_output(template, context_id)
+        if not path.is_file():
+            continue
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            stale.append(f"{path} (stale or invalid report)")
+            continue
+        if report.get("source_fingerprint") != fingerprint or str(report.get("status") or "").upper() != "PASS":
+            stale.append(f"{path} (stale source fingerprint or non-PASS status)")
+    return stale
+
+
+def write_agent_handoff(context_id: str, stage_name: str, missing: list[str]) -> int:
+    stage = STAGES[stage_name]
+    baseline_files = git_changed_files() or set()
+    baseline_states = changed_file_states(baseline_files)
+    resume_action = CURRENT_ACTION or stage.next_action
+    resume_arguments = list(CURRENT_EXTRA)
+    resume_command = " ".join(
+        shlex.quote(value) for value in ["/device-adapter", resume_action, context_id, *resume_arguments]
+        if value
+    )
+    payload = {
+        "schema_version": "1.0",
+        "context_id": context_id,
+        "stage": stage_name,
+        "status": "WAITING_FOR_AGENT",
+        "owner_agent": stage.owner,
+        "required_inputs": [format_stage_value(item, context_id) for item in stage.inputs],
+        "required_outputs": [format_stage_value(item, context_id) for item in stage.outputs],
+        "missing_outputs": missing,
+        "write_allowlist": [format_stage_value(item, context_id) for item in stage.write_roots],
+        "write_denylist": [format_stage_value(item, context_id) for item in stage.deny_roots],
+        "diff_budget": dict(stage.diff_budget),
+        "baseline_changed_files": sorted(baseline_files),
+        "baseline_file_states": baseline_states,
+        "resume_action": resume_action,
+        "resume_arguments": resume_arguments,
+        "resume_command": resume_command,
+        "instruction": "Run the bounded owner Agent, write every required output, then resume the same user command automatically.",
+        "created_at": now_iso(),
+    }
+    path = ARTIFACTS / f"{context_id}.agent_handoff.json"
+    json_write(path, payload)
+    STAGE_OUTPUTS[stage_name] = [str(path)]
+    marker(stage_name, "waiting_agent", WAITING_FOR_AGENT)
+    log_line(f"[AGENT_HANDOFF] stage={stage_name} owner={stage.owner} contract={path}")
+    return WAITING_FOR_AGENT
+
+
+def ensure_outputs(context_id: str, stage_name: str) -> int:
     stage = STAGES[stage_name]
     marker(stage_name, "start")
     missing = [str(fmt_output(item, context_id)) for item in stage.outputs if not fmt_output(item, context_id).exists()]
+    missing.extend(stale_agent_outputs(context_id, stage))
     if missing:
-        fail(
+        if stage.kind == "agent_handoff":
+            return write_agent_handoff(context_id, stage_name, missing)
+        return fail(
             context_id,
             stage_name,
             "required stage artifact is missing",
             [f"missing: {item}" for item in missing],
-            stage.next_action or "Create the missing stage artifact, then rerun.",
+            (f"/device-adapter {stage.next_action} {{context_id}}" if stage.next_action else
+             "Create the missing stage artifact, then rerun."),
         )
-        return False
+    boundary_rc = validate_agent_handoff_boundary(context_id, stage_name)
+    if boundary_rc:
+        return boundary_rc
     marker(stage_name, "success")
     checkpoint(context_id, stage_name, [str(fmt_output(item, context_id)) for item in stage.outputs])
-    return True
+    return 0
 
 
 def git_changed_files() -> set[str] | None:
     try:
         result = subprocess.run(
-            ["git", "status", "--porcelain", "-uall"],
+            ["git", "-c", f"safe.directory={Path.cwd().resolve()}", "status", "--porcelain", "-uall"],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -665,28 +561,60 @@ def stage_changed_files(
     }
 
 
-def load_boundary_policy() -> dict[str, Any]:
-    path = SCRIPT_DIR / "agent_boundary_policy.json"
-    if not path.exists():
-        return {}
+def validate_agent_handoff_boundary(context_id: str, stage_name: str) -> int:
+    path = ARTIFACTS / f"{context_id}.agent_handoff.json"
+    if not path.is_file():
+        return 0
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-
-
-def format_policy_patterns(patterns: list[str], context_id: str) -> list[str]:
-    return [item.format(context_id=context_id) for item in patterns]
+        handoff = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0
+    if (
+        handoff.get("context_id") != context_id
+        or handoff.get("stage") != stage_name
+        or handoff.get("status") != "WAITING_FOR_AGENT"
+    ):
+        return 0
+    current_files = git_changed_files()
+    if current_files is None:
+        return fail(
+            context_id, stage_name, "AGENT_BOUNDARY_AUDIT_UNAVAILABLE",
+            ["git status could not be read after Agent handoff"],
+            f"/device-adapter {STAGES[stage_name].next_action} {{context_id}}", 11,
+            "AGENT_BOUNDARY_AUDIT_UNAVAILABLE",
+        )
+    baseline_files = set(str(value) for value in handoff.get("baseline_changed_files") or [])
+    baseline_states = {
+        str(key): str(value) for key, value in (handoff.get("baseline_file_states") or {}).items()
+    }
+    current_states = changed_file_states(current_files)
+    changed = stage_changed_files(baseline_files, baseline_states, current_files, current_states)
+    ok, report = enforce_boundary(context_id, stage_name, changed)
+    if not ok:
+        return fail(
+            context_id, stage_name, "BOUNDARY_WRITE_VIOLATION",
+            [f"changed: {item}" for item in report.get("changed_files", [])]
+            + [f"violation: {item['path']} {item['reason']}" for item in report.get("violations", [])],
+            "Inspect the boundary report and rerun the bounded owner Agent.", 11,
+        )
+    handoff["status"] = "COMPLETED"
+    handoff["completed_at"] = now_iso()
+    handoff["changed_files"] = sorted(changed)
+    handoff["boundary_report"] = str(ARTIFACTS / f"{context_id}.{stage_name}.boundary_check.json")
+    json_write(path, handoff)
+    return 0
 
 
 def boundary_policy_for(stage_name: str, context_id: str) -> dict[str, Any]:
-    policy = load_boundary_policy()
-    default = dict(policy.get("default") or {})
-    stage_policy = dict((policy.get("stages") or {}).get(stage_name) or {})
-    merged = {**default, **stage_policy}
-    for key in ("write_allowlist", "write_denylist"):
-        merged[key] = format_policy_patterns(list(merged.get(key) or []), context_id)
-    return merged
+    stage = STAGES.get(stage_name)
+    if stage is None:
+        return {"write_allowlist": ["ops/artifacts/**"], "write_denylist": [".git/**"], "diff_budget": {}}
+    return {
+        "owner_agent": stage.owner,
+        "write_allowlist": [format_stage_value(item, context_id) for item in stage.write_roots],
+        "write_denylist": [format_stage_value(item, context_id) for item in stage.deny_roots],
+        "diff_budget": dict(stage.diff_budget),
+    }
 
 
 def boundary_allowed_paths(stage_name: str, context_id: str) -> list[str]:
@@ -702,7 +630,7 @@ def changed_line_count(paths: set[str]) -> int | None:
         return 0
     try:
         result = subprocess.run(
-            ["git", "diff", "--numstat", "--", *sorted(paths)],
+            ["git", "-c", f"safe.directory={Path.cwd().resolve()}", "diff", "--numstat", "--", *sorted(paths)],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -861,6 +789,22 @@ def spec_has_runtime_requirements(context_id: str) -> bool:
     return bool(runtime or legacy)
 
 
+def run_context_reasoning_contracts(context_id: str) -> int:
+    steps = (
+        ("stage3_context_normalize", "normalize_device_context.py"),
+        ("stage4a_capability_mapping", "resolve_capability_mapping.py"),
+        ("stage5_transport_resolve", "resolve_transport_profile.py"),
+    )
+    for stage_name, script in steps:
+        rc = run_command(context_id, stage_name, [sys.executable, str(SCRIPT_DIR / script), context_id],
+                         preserve_child_failure=True)
+        if rc:
+            return rc
+    return run_command(context_id, "stage4_functional_chain_check",
+        [sys.executable, str(SCRIPT_DIR / "functional_chain_check.py"), context_id, "--strict"],
+        preserve_child_failure=True)
+
+
 def run_model(context_id: str, extra: list[str] | None = None) -> int:
     extra = extra or []
     for stage_name in MODEL_STAGES:
@@ -870,15 +814,13 @@ def run_model(context_id: str, extra: list[str] | None = None) -> int:
                 return rc
             continue
         if stage_name == "stage4_functional_chain_check":
-            rc = run_command(
-                context_id,
-                stage_name,
-                [sys.executable, str(SCRIPT_DIR / "functional_chain_check.py"), context_id],
-            )
-            if rc:
-                return rc
+            # V5 generates the capability-driven chain after the formal device
+            # and plugin contracts are available.
             continue
         if stage_name == "stage5_deployment_plan":
+            rc = run_context_reasoning_contracts(context_id)
+            if rc:
+                return rc
             project_args: list[str] = []
             if "--project-dir" in extra:
                 index = extra.index("--project-dir")
@@ -897,8 +839,9 @@ def run_model(context_id: str, extra: list[str] | None = None) -> int:
             marker(stage_name, "success")
             checkpoint(context_id, stage_name, [str(CONTEXTS / f"{context_id}.device_spec.json")])
             continue
-        if not ensure_outputs(context_id, stage_name):
-            return 2
+        rc = ensure_outputs(context_id, stage_name)
+        if rc:
+            return rc
     return 0
 
 
@@ -908,20 +851,16 @@ def run_model_prep(context_id: str, extra: list[str]) -> int:
         return rc
     for stage_name in (
         "stage1_context_intake", "stage2_docs_inventory", "stage2_docs_extract",
-        "stage3_docs_coverage", "stage4_functional_chain_check",
+        "stage3_docs_coverage",
     ):
         if stage_name == "stage2_docs_extract":
-            if not ensure_outputs(context_id, stage_name):
-                return 2
-        elif stage_name == "stage4_functional_chain_check":
-            rc = run_command(
-                context_id, stage_name,
-                [sys.executable, str(SCRIPT_DIR / "functional_chain_check.py"), context_id],
-            )
+            rc = ensure_outputs(context_id, stage_name)
             if rc:
                 return rc
-        elif not ensure_outputs(context_id, stage_name):
-            return 2
+        else:
+            rc = ensure_outputs(context_id, stage_name)
+            if rc:
+                return rc
     rc = run_command(
         context_id,
         "stage4a_sdk_contract_prepare",
@@ -941,6 +880,72 @@ def env_check(context_id: str) -> int:
     return 0
 
 
+def option_args(extra: list[str], names: tuple[str, ...]) -> list[str]:
+    selected: list[str] = []
+    index = 0
+    while index < len(extra):
+        item = extra[index]
+        matched = next((name for name in names if item == name or item.startswith(name + "=")), None)
+        if matched:
+            selected.append(item)
+            if item == matched and index + 1 < len(extra):
+                selected.append(extra[index + 1])
+                index += 1
+        index += 1
+    return selected
+
+
+def has_option(arguments: list[str], name: str) -> bool:
+    return any(item == name or item.startswith(name + "=") for item in arguments)
+
+
+def sdk_material_present(context_id: str) -> bool:
+    path = CONTEXTS / f"{context_id}.plugin_contract.json"
+    if not path.is_file():
+        return False
+    try:
+        contract = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    sdk_root = Path(str(contract.get("sdk_root", "")))
+    return bool(str(sdk_root)) and all(
+        (sdk_root / relative).is_file()
+        for relative in ("VERSION", "ABI_VERSION", "cmake/HalAdapterSdkConfig.cmake")
+    )
+
+
+def run_adapt_codegen(context_id: str, extra: list[str]) -> int:
+    rc = env_check(context_id)
+    if rc:
+        return rc
+    rc = ensure_outputs(context_id, "stage7_spec_validate")
+    if rc:
+        return rc
+    rc = run_sdk_check(context_id)
+    if rc:
+        return rc
+    rc = run_context_reasoning_contracts(context_id)
+    if rc:
+        return rc
+    rc = run_command(context_id, "stage8_adapter_task",
+        [sys.executable, str(SCRIPT_DIR / "generate_adapter_task.py"), context_id], preserve_child_failure=True)
+    if rc:
+        return rc
+    for handoff_stage in ("stage9_pre_adapt_verification", "stage9a_test_design"):
+        rc = ensure_outputs(context_id, handoff_stage)
+        if rc:
+            return rc
+    rc = run_command(context_id, "stage8_yaml_generate", [sys.executable, str(SCRIPT_DIR / "adapt_hal_device.py"), context_id, *extra])
+    if rc:
+        return rc
+    rc = ensure_outputs(context_id, "stage10_adapter_codegen")
+    if rc:
+        return rc
+    return run_command(context_id, "stage10_implementation_coverage",
+        [sys.executable, str(SCRIPT_DIR / "verify_implementation_coverage.py"), context_id],
+        preserve_child_failure=True)
+
+
 def run_adapt(context_id: str, extra: list[str]) -> int:
     if "--allow-code" not in extra:
         return fail(
@@ -950,32 +955,39 @@ def run_adapt(context_id: str, extra: list[str]) -> int:
             "Run /device-adapter adapt {context_id} --allow-code",
             23,
         )
-    rc = env_check(context_id)
+
+    remote_args = option_args(extra, ("--host", "--user", "--port"))
+    model_args = option_args(extra, ("--project-dir",))
+    prep_args = [*remote_args, *model_args]
+    rc = run_model_prep(context_id, prep_args)
     if rc:
         return rc
-    if not ensure_outputs(context_id, "stage7_spec_validate"):
-        return 2
-    rc = run_sdk_check(context_id)
-    if rc:
-        return rc
-    preparation = (
-        ("stage3_context_normalize", "normalize_device_context.py"),
-        ("stage4a_capability_mapping", "resolve_capability_mapping.py"),
-        ("stage5_transport_resolve", "resolve_transport_profile.py"),
-        ("stage9_pre_adapt_verification", "generate_adapter_task.py"),
-    )
-    for stage_name, script in preparation:
-        rc = run_command(
-            context_id, stage_name,
-            [sys.executable, str(SCRIPT_DIR / script), context_id],
-            preserve_child_failure=True,
+
+    if sdk_material_present(context_id):
+        rc = run_sdk_check(context_id)
+    elif has_option(remote_args, "--host"):
+        rc = run_target_sdk_package(context_id, remote_args)
+    else:
+        return fail(
+            context_id, "stage6a_sdk_check",
+            "TARGET_SDK_MISSING: no validated Adapter SDK is available",
+            ["sdk_root is absent or incomplete", "target host was not supplied"],
+            "Rerun /device-adapter adapt {context_id} --allow-code --host <board> --user root",
+            17,
         )
-        if rc:
-            return rc
-    rc = run_command(context_id, "stage8_yaml_generate", [sys.executable, str(SCRIPT_DIR / "adapt_hal_device.py"), context_id, *extra])
     if rc:
         return rc
-    return 0
+
+    rc = run_model(context_id, model_args)
+    if rc:
+        return rc
+    rc = run_adapt_codegen(context_id, extra)
+    if rc:
+        return rc
+
+    if has_option(remote_args, "--host"):
+        return run_target_plugin_build(context_id, remote_args)
+    return run_plugin_build(context_id, [])
 
 
 def run_sdk_check(context_id: str) -> int:
@@ -1097,6 +1109,14 @@ def run_verify(context_id: str) -> int:
     rc = run_deterministic_verify(context_id)
     if rc:
         return rc
+    for handoff_stage in (
+        "stage11a_independent_verification",
+        "stage11b_cpp_review",
+        "stage11c_differential_review",
+    ):
+        rc = ensure_outputs(context_id, handoff_stage)
+        if rc:
+            return rc
     return run_command(
         context_id,
         "stage11d_human_approval",

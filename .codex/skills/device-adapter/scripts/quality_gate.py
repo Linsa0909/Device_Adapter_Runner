@@ -16,7 +16,8 @@ from typing import Any
 ARTIFACTS = Path("ops/artifacts")
 PASS = "PASS"
 CHECK_STAGES = {
-    "tdd": ("stage10a_tdd_evidence", "hal-adapter-builder"),
+    "implementation": ("stage10_adapter_codegen", "hal-adapter-builder"),
+    "tdd": ("stage10_adapter_codegen", "hal-adapter-builder"),
     "verification": ("stage11a_independent_verification", "verification-agent"),
     "c_review": ("stage11b_cpp_review", "verification-agent"),
     "differential_review": ("stage11c_differential_review", "verification-agent"),
@@ -51,7 +52,8 @@ def is_fingerprint_input(path: Path) -> bool:
 
 def git_changed_files() -> list[Path]:
     result = subprocess.run(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        ["git", "-c", f"safe.directory={Path.cwd().resolve()}",
+         "status", "--porcelain=v1", "--untracked-files=all"],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
@@ -105,6 +107,11 @@ def source_fingerprint(context_id: str) -> tuple[str, list[str]]:
         Path("ops/contexts") / f"{context_id}.device_spec.json",
         contract_path,
         Path("ops/contexts") / f"{context_id}.sdk_inventory.json",
+        Path("ops/contexts") / f"{context_id}.normalized_context.json",
+        Path("ops/contexts") / f"{context_id}.capability_mapping.json",
+        Path("ops/contexts") / f"{context_id}.transport_bindings.json",
+        Path("ops/contexts") / f"{context_id}.adapter_implementation_task.json",
+        Path("ops/contexts") / f"{context_id}.functional_chain.json",
         Path("ops/contexts") / f"{context_id}.deployment_plan.json",
         Path("ops/contexts") / f"{context_id}.dependency_plan.json",
     ):
@@ -143,6 +150,7 @@ def has_cpp_scope(context_id: str) -> bool:
 
 def report_paths(context_id: str) -> dict[str, Path]:
     paths: dict[str, Path] = {}
+    paths["implementation"] = ARTIFACTS / f"{context_id}.implementation_coverage.json"
     if has_cpp_scope(context_id):
         paths["tdd"] = ARTIFACTS / f"{context_id}.tdd_report.json"
     paths["verification"] = ARTIFACTS / f"{context_id}.verification_report.json"

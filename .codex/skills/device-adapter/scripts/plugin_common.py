@@ -49,6 +49,25 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def readme_contract_errors(path: Path, contract: dict[str, Any]) -> list[str]:
+    if not path.is_file():
+        return ["README.md is required"]
+    text = path.read_text(encoding="utf-8", errors="replace")
+    sdk_version = str(contract.get("sdk_version", "")).strip()
+    sdk_abi = str(contract.get("sdk_abi", "")).strip()
+    sdk_lines = [line for line in text.splitlines() if "sdk" in line.lower()]
+    errors: list[str] = []
+    if not sdk_version or not any(sdk_version in line for line in sdk_lines):
+        errors.append(f"README.md must declare HAL Adapter SDK version {sdk_version or '<missing>'}")
+    if not sdk_abi or not any(
+        "abi" in line.lower()
+        and re.search(rf"(?<!\d){re.escape(sdk_abi)}(?!\d)", line)
+        for line in sdk_lines
+    ):
+        errors.append(f"README.md must declare HAL Adapter SDK ABI {sdk_abi or '<missing>'}")
+    return errors
+
+
 def load_platform_profile() -> dict[str, Any]:
     return load_json(PLATFORM_PROFILE_PATH)
 

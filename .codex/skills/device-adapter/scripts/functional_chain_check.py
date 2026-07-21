@@ -161,6 +161,57 @@ def declared_healthcheck(runtime: dict[str, Any]) -> bool:
     return bool(as_list(runtime.get("healthchecks")) or as_list(runtime.get("endpoint_healthchecks")) or as_list(runtime.get("process_healthchecks")))
 
 
+def build_capability_chains(context_id: str, mapping: dict[str, Any],
+                            transports: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    """Build chains only from context-derived capability and transport evidence."""
+    bindings = {str(item.get("binding_id")): item for item in transports.get("bindings", [])}
+    chains: list[dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
+    gaps: list[dict[str, Any]] = []
+    for item in mapping.get("mappings", []):
+        feature_id = str(item.get("feature_id") or "")
+        group_id = str(item.get("group_id") or "")
+        entry_ids = [str(entry.get("id")) for entry in item.get("hal_entries", [])]
+        binding_id = str(item.get("transport_binding") or "")
+        binding = bindings.get(binding_id)
+        steps = [
+            {"stage":"hal_entry","evidence":{"group_id":group_id,"entries":entry_ids}},
+            {"stage":"adapter_handler","evidence":{"implementation_required":True}},
+            {"stage":"device_backend","evidence":item.get("implementation_evidence",[])},
+            {"stage":"transport","evidence":binding or {}},
+            {"stage":"device_response","evidence":item.get("source_evidence",[])},
+            {"stage":"hal_output","evidence":{"direction":item.get("direction","telemetry")}},
+            {"stage":"test_evidence","evidence":item.get("tests",[])},
+        ]
+        chains.append({"feature_id":feature_id,"group_id":group_id,"steps":steps})
+        for step in steps:
+            present = bool(step["evidence"])
+            items.append({"feature_id":feature_id,"chain_stage":step["stage"],
+                          "status":"declared" if present else "needs_evidence","evidence":step["evidence"]})
+        missing = []
+        if not entry_ids: missing.append("hal_entry")
+        if not item.get("implementation_evidence"): missing.append("device_backend")
+        if not binding or binding.get("missing_context"): missing.append("transport")
+        if not item.get("tests"): missing.append("test_evidence")
+        if missing:
+            gaps.append({"code":"CAPABILITY_CHAIN_INCOMPLETE","severity":"blocking","feature_id":feature_id,
+                         "message":f"{feature_id} lacks evidence for: {', '.join(missing)}",
+                         "owner_agent":"acceptance-planner-agent"})
+    if mapping.get("unmapped_features"):
+        gaps.append({"code":"REQUIRED_FEATURE_UNMAPPED","severity":"blocking",
+                     "message":"Required context features are not mapped: " + ", ".join(mapping["unmapped_features"]),
+                     "owner_agent":"capability-modeler-agent"})
+    if not chains:
+        gaps.append({"code":"CAPABILITY_MAPPING_EMPTY","severity":"blocking",
+                     "message":"No evidence-backed capability mappings exist.","owner_agent":"capability-modeler-agent"})
+    chain_doc={"schema_version":"2.0","context_id":context_id,"generated_by":"functional_chain_check.py",
+               "mapping_policy":"context_evidence_only","chains":chains,"assumptions":[]}
+    checklist={"schema_version":"2.0","context_id":context_id,"generated_by":"functional_chain_check.py",
+               "runtime_requirement_sources":["normalized_context.json","capability_mapping.json","transport_bindings.json"],
+               "items":items,"gaps":gaps}
+    return chain_doc, checklist, gaps
+
+
 def build_chain(context_id: str, text: str, spec: dict[str, Any], manifest: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     runtime = runtime_requirements(spec)
     blob = lower_blob(text, spec, manifest)
@@ -176,75 +227,14 @@ def build_chain(context_id: str, text: str, spec: dict[str, Any], manifest: dict
     chain: list[dict[str, Any]] = []
     gaps: list[dict[str, Any]] = []
 
-    # Prefer the modeled contract over filenames and document inventories. A radar
-    # bundle may contain viewer/video tooling without making the adapted device a
-    # camera, and an SDK archive name must not imply a deployed helper process.
-    is_pointcloud = has_any(contract_blob or blob, [r"激光雷达|lidar|点云|point.?cloud"])
-    is_radar = has_any(contract_blob or blob, [r"毫米波|radar"])
-    is_video = not (is_radar or is_pointcloud) and has_any(
-        contract_blob or blob,
-        [r"红外|camera|摄像|视频|video|v4l2|rtmp|rtsp|hls|ffmpeg|h264|h\.264|uyvy"],
-    )
-    is_bus = has_any(contract_blob or blob, [r"\bcan\b|串口|serial|rs485|rs232|uart|modbus"])
-    network_stream = has_any(contract_blob or blob, [r"\budp\b|\btcp\b|rtsp|rtmp|http|mqtt|websocket"])
     declared_services = as_list(runtime.get("services")) + as_list(runtime.get("runtime_services"))
     helper_process = bool(as_list(runtime.get("subprocesses")) or declared_services)
-
-    if is_video:
-        chain.extend(
-            [
-                {
-                    "name": "capture",
-                    "role": "producer",
-                    "purpose": "Acquire frames from a camera/thermal/video source.",
-                    "evidence": "context/spec mentions video, camera, infrared, V4L2, or stream protocols.",
-                    "requires": ["device discovery or input endpoint", "device/container permission", "format/fps evidence"],
-                },
-                {
-                    "name": "encode_or_process",
-                    "role": "processor",
-                    "purpose": "Convert raw frames into the documented output format or stream.",
-                    "evidence": "context/spec mentions video processing, encoder, FFmpeg, H.264, or helper executable.",
-                    "requires": ["processor binary or adapter code", "runtime libraries", "RPATH/library path rules"],
-                },
-            ]
-        )
-    elif is_radar:
-        chain.extend(
-            [
-                {
-                    "name": "transport_receive",
-                    "role": "producer",
-                    "purpose": "Receive live radar frames through the documented CAN, serial, SDK, or network transport.",
-                    "evidence": "device_spec identifies a radar device and its selected transport.",
-                    "requires": ["transport discovery", "interface configuration and permission", "live frame evidence"],
-                },
-                {
-                    "name": "protocol_decode",
-                    "role": "processor",
-                    "purpose": "Decode documented radar frames into measurements, status, objects, or tracks.",
-                    "evidence": "device_spec identifies radar protocol fields/capabilities.",
-                    "requires": ["protocol implementation", "frame validation", "decoder tests"],
-                },
-                {
-                    "name": "hal_output",
-                    "role": "sink",
-                    "purpose": "Publish decoded radar data through the declared HAL/ROS contract.",
-                    "evidence": "device_spec defines capability/device/deployment output.",
-                    "requires": ["HAL registration", "output freshness healthcheck", "real measurement evidence"],
-                },
-            ]
-        )
-    elif is_pointcloud or is_bus or network_stream:
-        chain.append(
-            {
-                "name": "acquire_or_receive",
-                "role": "producer",
-                "purpose": "Acquire device data through the documented bus, SDK, device node, or network endpoint.",
-                "evidence": "context/spec mentions lidar/radar/bus/network transport.",
-                "requires": ["transport endpoint", "permission/network config", "protocol or SDK evidence"],
-            }
-        )
+    gaps.append({
+        "code": "CAPABILITY_MAPPING_REQUIRED",
+        "severity": "blocking",
+        "message": "Generate normalized context, SDK capability mapping and transport bindings before the functional chain.",
+        "owner_agent": "capability-modeler-agent",
+    })
 
     if helper_process:
         chain.append(
@@ -289,17 +279,6 @@ def build_chain(context_id: str, text: str, spec: dict[str, Any], manifest: dict
                 "severity": "blocking",
                 "message": "Context/spec does not define what the device must acquire, process, output, or expose.",
                 "owner_agent": "acceptance-planner-agent",
-            }
-        )
-
-    device_nodes = as_list(runtime.get("device_nodes")) + as_list((manifest.get("remote") or {}).get("device_paths"))
-    if is_video and not device_nodes and not has_any(blob, [r"/dev/", r"auto.?detect|自动探索|设备节点"]):
-        gaps.append(
-            {
-                "code": "DEVICE_DISCOVERY_UNDECLARED",
-                "severity": "blocking",
-                "message": "Video/camera context requires device-node or auto-discovery policy.",
-                "owner_agent": "deployment-planner-agent",
             }
         )
 
@@ -407,7 +386,13 @@ def main() -> int:
     text = context_path.read_text(encoding="utf-8", errors="ignore")
     manifest = read_json(manifest_path)
     spec = read_json(spec_path)
-    chain, checklist, gaps = build_chain(args.context_id, text, spec, manifest)
+    mapping_path = CONTEXTS / f"{args.context_id}.capability_mapping.json"
+    transport_path = CONTEXTS / f"{args.context_id}.transport_bindings.json"
+    if mapping_path.is_file() and transport_path.is_file():
+        chain, checklist, gaps = build_capability_chains(
+            args.context_id, read_json(mapping_path), read_json(transport_path))
+    else:
+        chain, checklist, gaps = build_chain(args.context_id, text, spec, manifest)
 
     chain_path = CONTEXTS / f"{args.context_id}.functional_chain.json"
     checklist_path = CONTEXTS / f"{args.context_id}.dependency_checklist.json"

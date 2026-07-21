@@ -1,28 +1,268 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
   "platform_profile": "yunshu-aarch64-humble",
+  "description": "Authoritative device-adapter DAG, ownership, artifact and write-boundary contract.",
+  "actions": {
+    "model-prep": ["stage0_env_check", "stage1_context_intake", "stage2_docs_inventory", "stage2_docs_extract", "stage3_docs_coverage", "stage4a_sdk_contract_prepare"],
+    "model": ["stage0_env_check", "stage1_context_intake", "stage2_docs_inventory", "stage2_docs_extract", "stage3_docs_coverage", "stage4_capability_model", "stage4b_plugin_contract", "stage5_deployment_plan", "stage6_dependency_audit", "stage7_spec_validate"],
+    "adapt": ["stage8_adapter_task", "stage9_pre_adapt_verification", "stage9a_test_design", "stage8_yaml_generate", "stage10_adapter_codegen", "stage10_implementation_coverage", "stage10c_target_plugin_build", "stage11_plugin_verify"],
+    "verify": ["stage4_functional_chain_check", "stage6a_sdk_check", "stage6b_sdk_validate", "stage11_plugin_verify", "stage11a_independent_verification", "stage11b_cpp_review", "stage11c_differential_review"],
+    "package": ["stage11d_human_approval", "stage12_package_manifest", "stage13_package_verify"],
+    "deploy": ["stage17_remote_transfer", "stage18_remote_prepare"],
+    "test": ["stage19_remote_device_probe", "stage20_remote_run", "stage21_remote_test", "stage22_collect_logs"]
+  },
   "stages": {
-    "stage0_env_check": {"owner":"stage-orchestrator","kind":"deterministic","depends_on":[],"required_inputs":[],"required_outputs":[],"write_roots":["ops/artifacts/**"],"deny_roots":["src/**","adapter_plugins/**"],"failure_action":"context"},
-    "stage1_context_intake": {"owner":"context-mapper","kind":"agent_handoff","depends_on":["stage0_env_check"],"required_inputs":[],"required_outputs":["ops/contexts/{context_id}.context.md","ops/contexts/{context_id}.manifest.json"],"write_roots":["ops/contexts/**","ops/artifacts/**"],"deny_roots":["src/**","adapter_plugins/**"],"failure_action":"context"},
-    "stage2_docs_extract": {"owner":"docs-intake-agent","kind":"hybrid","depends_on":["stage1_context_intake"],"required_inputs":["ops/contexts/{context_id}.context.md"],"required_outputs":["ops/artifacts/docs/{context_id}/extraction_report.json"],"write_roots":["ops/artifacts/docs/**","ops/contexts/**"],"deny_roots":["docs/**","src/**","adapter_plugins/**"],"failure_action":"context"},
-    "stage3_context_normalize": {"owner":"context-mapper","kind":"deterministic","depends_on":["stage2_docs_extract"],"required_inputs":["ops/contexts/{context_id}.device_observation.json"],"required_outputs":["ops/contexts/{context_id}.normalized_context.json"],"write_roots":["ops/contexts/**","ops/artifacts/**"],"deny_roots":["src/**","adapter_plugins/**"],"failure_action":"model"},
-    "stage4_capability_discover": {"owner":"capability-modeler-agent","kind":"deterministic","depends_on":["stage3_context_normalize"],"required_inputs":["ops/contexts/{context_id}.plugin_contract.json"],"required_outputs":["ops/contexts/{context_id}.sdk_inventory.json"],"write_roots":["ops/contexts/**","ops/artifacts/**"],"deny_roots":["src/**","adapter_plugins/**","**/*.capability.yaml"],"failure_action":"sdk-check"},
-    "stage4a_capability_mapping": {"owner":"capability-modeler-agent","kind":"hybrid","depends_on":["stage4_capability_discover"],"required_inputs":["ops/contexts/{context_id}.normalized_context.json"],"required_outputs":["ops/contexts/{context_id}.capability_mapping.json"],"write_roots":["ops/contexts/**","ops/artifacts/**"],"deny_roots":["src/**","adapter_plugins/**","**/*.capability.yaml"],"failure_action":"model"},
-    "stage5_transport_resolve": {"owner":"transport-resolver-agent","kind":"deterministic","depends_on":["stage4a_capability_mapping"],"required_inputs":["ops/contexts/{context_id}.normalized_context.json"],"required_outputs":["ops/contexts/{context_id}.transport_bindings.json"],"write_roots":["ops/contexts/**","ops/artifacts/**"],"deny_roots":["src/**","adapter_plugins/**"],"failure_action":"model"},
-    "stage6_sdk_check": {"owner":"sdk-dependency-auditor-agent","kind":"deterministic","depends_on":["stage5_transport_resolve"],"required_inputs":["ops/contexts/{context_id}.plugin_contract.json"],"required_outputs":["ops/artifacts/{context_id}.sdk_check.json"],"write_roots":["ops/artifacts/**","ops/contexts/**"],"deny_roots":["src/**","adapter_plugins/**"],"failure_action":"sdk-check"},
-    "stage6b_sdk_validate": {"owner":"sdk-packager-agent","kind":"deterministic","depends_on":["stage6_sdk_check"],"required_inputs":["ops/artifacts/{context_id}.sdk_check.json"],"required_outputs":["ops/artifacts/{context_id}.sdk_validation.json"],"write_roots":["ops/artifacts/**"],"deny_roots":["src/**","adapter_plugins/**","ops/contexts/**"],"failure_action":"sdk-check"},
-    "stage9_pre_adapt_verification": {"owner":"adapter-test-designer-agent","kind":"agent_handoff","depends_on":["stage6b_sdk_validate"],"required_inputs":["ops/contexts/{context_id}.capability_mapping.json","ops/contexts/{context_id}.transport_bindings.json"],"required_outputs":["ops/artifacts/{context_id}.pre_adapt_review.json"],"write_roots":["adapter_plugins/{adapter_type}/tests/**","ops/artifacts/**"],"deny_roots":["adapter_plugins/{adapter_type}/src/**","adapter_plugins/{adapter_type}/include/**","src/**"],"failure_action":"adapt"},
-    "stage9a_test_design": {"owner":"adapter-test-designer-agent","kind":"agent_handoff","depends_on":["stage9_pre_adapt_verification"],"required_inputs":["ops/artifacts/{context_id}.pre_adapt_review.json"],"required_outputs":["ops/artifacts/{context_id}.test_plan.json","ops/artifacts/{context_id}.tdd_report.json"],"write_roots":["adapter_plugins/{adapter_type}/tests/**","ops/artifacts/**"],"deny_roots":["adapter_plugins/{adapter_type}/src/**","adapter_plugins/{adapter_type}/include/**","src/**"],"failure_action":"adapt"},
-    "stage10_adapter_codegen": {"owner":"hal-adapter-builder","kind":"agent_handoff","depends_on":["stage9_pre_adapt_verification","stage9a_test_design"],"required_inputs":["ops/contexts/{context_id}.adapter_implementation_task.json"],"required_outputs":["ops/artifacts/{context_id}.adapter_implementation_report.json"],"write_roots":["adapter_plugins/{adapter_type}/src/**","adapter_plugins/{adapter_type}/include/**","adapter_plugins/{adapter_type}/CMakeLists.txt","adapter_plugins/{adapter_type}/config/**","ops/artifacts/**"],"deny_roots":["src/hardware_abstraction_layer/**","**/*.capability.yaml","adapter_plugins/{adapter_type}/tests/**"],"failure_action":"adapt"},
-    "stage10a_target_plugin_build": {"owner":"plugin-builder-agent","kind":"deterministic","depends_on":["stage10_adapter_codegen"],"required_inputs":["ops/artifacts/{context_id}.adapter_implementation_report.json"],"required_outputs":["ops/artifacts/{context_id}.target_plugin_build.json"],"write_roots":["build/**","ops/artifacts/**"],"deny_roots":["src/**","adapter_plugins/**","ops/contexts/**"],"failure_action":"target-plugin-build"},
-    "stage10b_shared_object_verify": {"owner":"verification-agent","kind":"deterministic","depends_on":["stage10a_target_plugin_build"],"required_inputs":["ops/artifacts/{context_id}.target_plugin_build.json"],"required_outputs":["ops/artifacts/{context_id}.shared_object_validation.json","ops/artifacts/{context_id}.abi_validation.json","ops/artifacts/{context_id}.dependency_closure.json"],"write_roots":["ops/artifacts/**"],"deny_roots":["src/**","adapter_plugins/**","build/**","ops/contexts/**"],"failure_action":"verify"},
-    "stage11a_independent_verification": {"owner":"adapter-verification-agent","kind":"agent_handoff","depends_on":["stage10b_shared_object_verify"],"required_inputs":["ops/artifacts/{context_id}.shared_object_validation.json"],"required_outputs":["ops/artifacts/{context_id}.verification_report.json"],"write_roots":["ops/artifacts/**"],"deny_roots":["src/**","adapter_plugins/**","build/**","ops/contexts/**"],"failure_action":"review"},
-    "stage11b_cpp_review": {"owner":"cpp-review-agent","kind":"agent_handoff","depends_on":["stage11a_independent_verification"],"required_inputs":["ops/artifacts/{context_id}.verification_report.json"],"required_outputs":["ops/artifacts/{context_id}.c_review_report.json"],"write_roots":["ops/artifacts/**"],"deny_roots":["src/**","adapter_plugins/**","build/**","ops/contexts/**"],"failure_action":"review"},
-    "stage11c_differential_review": {"owner":"differential-review-agent","kind":"agent_handoff","depends_on":["stage11b_cpp_review"],"required_inputs":["ops/artifacts/{context_id}.c_review_report.json"],"required_outputs":["ops/artifacts/{context_id}.differential_review_report.json"],"write_roots":["ops/artifacts/**"],"deny_roots":["src/**","adapter_plugins/**","build/**","ops/contexts/**"],"failure_action":"review"},
-    "stage11d_human_approval": {"owner":"human","kind":"human_gate","depends_on":["stage11c_differential_review"],"required_inputs":["ops/artifacts/{context_id}.quality_gate_report.json"],"required_outputs":["ops/artifacts/{context_id}.human_approval.json"],"write_roots":["ops/artifacts/**"],"deny_roots":["src/**","adapter_plugins/**","build/**","ops/contexts/**"],"failure_action":"approve"},
-    "stage12_package": {"owner":"package-builder","kind":"deterministic","depends_on":["stage11d_human_approval"],"required_inputs":["ops/artifacts/{context_id}.human_approval.json"],"required_outputs":["ops/artifacts/{context_id}_adapter_plugin.tar.gz"],"write_roots":["ops/artifacts/**"],"deny_roots":["src/**","adapter_plugins/**","ops/contexts/**"],"failure_action":"package"},
-    "stage17_upload_sha_verify": {"owner":"remote-deployer","kind":"deterministic","depends_on":["stage12_package"],"required_inputs":["ops/artifacts/{context_id}_adapter_plugin.tar.gz"],"required_outputs":["ops/artifacts/{context_id}.upload_manifest.json"],"write_roots":["ops/artifacts/**","remote temporary directory"],"deny_roots":["src/**","adapter_plugins/**","ops/contexts/**"],"failure_action":"deploy"},
-    "stage21_single_instance_remote_test": {"owner":"remote-tester","kind":"deterministic","depends_on":["stage17_upload_sha_verify"],"required_inputs":["ops/contexts/{context_id}.deployment_plan.json"],"required_outputs":["ops/artifacts/{context_id}.remote_acceptance.json"],"write_roots":["ops/artifacts/**","remote test container"],"deny_roots":["src/**","adapter_plugins/**","ops/contexts/**"],"failure_action":"test"},
-    "stage21a_multi_instance_reservation": {"owner":"remote-tester","kind":"reserved_not_run","depends_on":["stage21_single_instance_remote_test"],"required_inputs":[],"required_outputs":["ops/artifacts/{context_id}.multi_instance_validation.json"],"write_roots":["ops/artifacts/**"],"deny_roots":["src/**","adapter_plugins/**","ops/contexts/**"],"failure_action":"test"}
+    "stage0_env_check": {
+      "owner": "stage-orchestrator", "kind": "deterministic", "depends_on": [],
+      "required_inputs": [], "required_outputs": [],
+      "write_roots": ["ops/artifacts/**", "ops/contexts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**"],
+      "failure_action": "model"
+    },
+    "stage1_context_intake": {
+      "owner": "context-mapper", "kind": "agent_handoff", "depends_on": ["stage0_env_check"],
+      "required_inputs": [], "required_outputs": ["ops/contexts/{context_id}.context.md", "ops/contexts/{context_id}.manifest.json"],
+      "write_roots": ["ops/contexts/**", "ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "Dockerfile", "docker-compose.yml"],
+      "failure_action": "context"
+    },
+    "stage2_docs_inventory": {
+      "owner": "docs-intake-agent", "kind": "agent_handoff", "depends_on": ["stage1_context_intake"],
+      "required_inputs": ["ops/contexts/{context_id}.context.md"], "required_outputs": ["ops/contexts/{context_id}.docs_inventory.json"],
+      "write_roots": ["ops/contexts/**", "ops/artifacts/docs/**", "ops/artifacts/**"], "deny_roots": [".git/**", "docs/**", "src/**", "adapter_plugins/**"],
+      "failure_action": "model"
+    },
+    "stage2_docs_extract": {
+      "owner": "docs-intake-agent", "kind": "hybrid", "depends_on": ["stage2_docs_inventory"],
+      "required_inputs": ["ops/contexts/{context_id}.docs_inventory.json"], "required_outputs": ["ops/artifacts/docs/{context_id}/extraction_report.json"],
+      "write_roots": ["ops/artifacts/docs/**", "ops/contexts/**", "ops/artifacts/**"], "deny_roots": [".git/**", "docs/**", "src/**", "adapter_plugins/**"],
+      "failure_action": "context"
+    },
+    "stage3_docs_coverage": {
+      "owner": "docs-intake-agent", "kind": "agent_handoff", "depends_on": ["stage2_docs_extract"],
+      "required_inputs": ["ops/artifacts/docs/{context_id}/extraction_report.json"], "required_outputs": ["ops/contexts/{context_id}.docs_coverage.json", "ops/contexts/{context_id}.device_observation.json"],
+      "write_roots": ["ops/contexts/**", "ops/artifacts/**"], "deny_roots": [".git/**", "docs/**", "src/**", "adapter_plugins/**"],
+      "failure_action": "model"
+    },
+    "stage4a_sdk_contract_prepare": {
+      "owner": "context-mapper", "kind": "deterministic", "depends_on": ["stage3_docs_coverage"],
+      "required_inputs": ["ops/contexts/{context_id}.context.md"], "required_outputs": ["ops/contexts/{context_id}.plugin_contract.json"],
+      "write_roots": ["ops/contexts/**", "ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**"],
+      "failure_action": "model-prep"
+    },
+    "stage6a_sdk_package": {
+      "owner": "sdk-packager-agent", "kind": "deterministic", "depends_on": ["stage4a_sdk_contract_prepare"],
+      "required_inputs": ["ops/contexts/{context_id}.plugin_contract.json"], "required_outputs": ["ops/artifacts/{context_id}.sdk_package.json"],
+      "write_roots": ["build/**", "ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "ops/contexts/**"],
+      "failure_action": "sdk-package"
+    },
+    "stage6a_target_hal_build": {
+      "owner": "sdk-packager-agent", "kind": "deterministic", "depends_on": ["stage4a_sdk_contract_prepare"],
+      "required_inputs": ["ops/contexts/{context_id}.plugin_contract.json"], "required_outputs": ["ops/artifacts/{context_id}.target_sdk_package.json"],
+      "write_roots": ["build/**", "ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**"],
+      "failure_action": "target-sdk-package"
+    },
+    "stage6a_sdk_check": {
+      "owner": "sdk-dependency-auditor-agent", "kind": "deterministic", "depends_on": ["stage4a_sdk_contract_prepare"],
+      "required_inputs": ["ops/contexts/{context_id}.plugin_contract.json"], "required_outputs": ["ops/contexts/{context_id}.sdk_inventory.json", "ops/artifacts/{context_id}.sdk_check.json"],
+      "write_roots": ["ops/contexts/**", "ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**"],
+      "failure_action": "sdk-check"
+    },
+    "stage6b_sdk_validate": {
+      "owner": "sdk-packager-agent", "kind": "deterministic", "depends_on": ["stage6a_sdk_check"],
+      "required_inputs": ["ops/artifacts/{context_id}.sdk_check.json"], "required_outputs": ["ops/artifacts/{context_id}.sdk_validation.json"],
+      "write_roots": ["ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "build/**", "ops/contexts/**"],
+      "failure_action": "sdk-check"
+    },
+    "stage4_capability_model": {
+      "owner": "capability-modeler-agent", "kind": "agent_handoff", "depends_on": ["stage6b_sdk_validate"],
+      "required_inputs": ["ops/contexts/{context_id}.sdk_inventory.json", "ops/contexts/{context_id}.device_observation.json"], "required_outputs": ["ops/contexts/{context_id}.device_spec.json"],
+      "write_roots": ["ops/contexts/**", "ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "**/*.capability.yaml"],
+      "failure_action": "model"
+    },
+    "stage4b_plugin_contract": {
+      "owner": "capability-modeler-agent", "kind": "agent_handoff", "depends_on": ["stage4_capability_model"],
+      "required_inputs": ["ops/contexts/{context_id}.device_spec.json"], "required_outputs": ["ops/contexts/{context_id}.plugin_contract.json"],
+      "write_roots": ["ops/contexts/**", "ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "**/*.capability.yaml"],
+      "failure_action": "model"
+    },
+    "stage3_context_normalize": {
+      "owner": "context-mapper", "kind": "deterministic", "depends_on": ["stage4b_plugin_contract"],
+      "required_inputs": ["ops/contexts/{context_id}.device_observation.json"], "required_outputs": ["ops/contexts/{context_id}.normalized_context.json"],
+      "write_roots": ["ops/contexts/**", "ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**"],
+      "failure_action": "model"
+    },
+    "stage4a_capability_mapping": {
+      "owner": "capability-modeler-agent", "kind": "deterministic", "depends_on": ["stage3_context_normalize"],
+      "required_inputs": ["ops/contexts/{context_id}.normalized_context.json", "ops/contexts/{context_id}.sdk_inventory.json"], "required_outputs": ["ops/contexts/{context_id}.capability_mapping.json"],
+      "write_roots": ["ops/contexts/**", "ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "**/*.capability.yaml"],
+      "failure_action": "model"
+    },
+    "stage5_transport_resolve": {
+      "owner": "transport-resolver-agent", "kind": "deterministic", "depends_on": ["stage4a_capability_mapping"],
+      "required_inputs": ["ops/contexts/{context_id}.normalized_context.json"], "required_outputs": ["ops/contexts/{context_id}.transport_bindings.json"],
+      "write_roots": ["ops/contexts/**", "ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**"],
+      "failure_action": "model"
+    },
+    "stage4_functional_chain_check": {
+      "owner": "acceptance-planner-agent", "kind": "deterministic", "depends_on": ["stage5_transport_resolve"],
+      "required_inputs": ["ops/contexts/{context_id}.capability_mapping.json", "ops/contexts/{context_id}.transport_bindings.json"], "required_outputs": ["ops/contexts/{context_id}.functional_chain.json", "ops/contexts/{context_id}.dependency_checklist.json", "ops/artifacts/{context_id}.dependency_gaps.md"],
+      "write_roots": ["ops/contexts/**", "ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**"],
+      "failure_action": "model"
+    },
+    "stage5_deployment_plan": {
+      "owner": "deployment-planner-agent", "kind": "deterministic", "depends_on": ["stage4_functional_chain_check"],
+      "required_inputs": ["ops/contexts/{context_id}.transport_bindings.json", "ops/contexts/{context_id}.device_spec.json"], "required_outputs": ["ops/contexts/{context_id}.deployment_plan.json", "ops/contexts/{context_id}.deployment.yaml"],
+      "write_roots": ["ops/contexts/**", "ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**"],
+      "failure_action": "model"
+    },
+    "stage6_dependency_audit": {
+      "owner": "sdk-dependency-auditor-agent", "kind": "hybrid", "depends_on": ["stage4_functional_chain_check"],
+      "required_inputs": ["ops/contexts/{context_id}.dependency_checklist.json"], "required_outputs": ["ops/contexts/{context_id}.device_spec.json"],
+      "write_roots": ["ops/contexts/**", "ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**"],
+      "failure_action": "model"
+    },
+    "stage7_spec_validate": {
+      "owner": "spec-validator-agent", "kind": "deterministic", "depends_on": ["stage5_deployment_plan", "stage6_dependency_audit"],
+      "required_inputs": ["ops/contexts/{context_id}.device_spec.json", "ops/contexts/{context_id}.plugin_contract.json"], "required_outputs": ["ops/contexts/{context_id}.device_spec.json"],
+      "write_roots": ["ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "ops/contexts/**"],
+      "failure_action": "verify"
+    },
+    "stage8_adapter_task": {
+      "owner": "stage-orchestrator", "kind": "deterministic", "depends_on": ["stage7_spec_validate"],
+      "required_inputs": ["ops/contexts/{context_id}.device_spec.json", "ops/contexts/{context_id}.capability_mapping.json", "ops/contexts/{context_id}.transport_bindings.json"], "required_outputs": ["ops/contexts/{context_id}.adapter_implementation_task.json"],
+      "write_roots": ["ops/contexts/**", "ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**"],
+      "failure_action": "adapt"
+    },
+    "stage9_pre_adapt_verification": {
+      "owner": "adapter-test-designer-agent", "kind": "agent_handoff", "depends_on": ["stage8_adapter_task"],
+      "required_inputs": ["ops/contexts/{context_id}.adapter_implementation_task.json"], "required_outputs": ["ops/artifacts/{context_id}.pre_adapt_review.json"],
+      "write_roots": ["adapter_plugins/{adapter_type}/tests/**", "ops/artifacts/**"], "deny_roots": [".git/**", "adapter_plugins/{adapter_type}/src/**", "adapter_plugins/{adapter_type}/include/**", "src/**"],
+      "diff_budget": {"max_modified_files": 30, "max_changed_lines": 4000}, "failure_action": "adapt"
+    },
+    "stage9a_test_design": {
+      "owner": "adapter-test-designer-agent", "kind": "agent_handoff", "depends_on": ["stage9_pre_adapt_verification"],
+      "required_inputs": ["ops/artifacts/{context_id}.pre_adapt_review.json"], "required_outputs": ["ops/artifacts/{context_id}.test_plan.json", "ops/artifacts/{context_id}.tdd_report.json"],
+      "write_roots": ["adapter_plugins/{adapter_type}/tests/**", "ops/artifacts/**"], "deny_roots": [".git/**", "adapter_plugins/{adapter_type}/src/**", "adapter_plugins/{adapter_type}/include/**", "src/**"],
+      "diff_budget": {"max_modified_files": 40, "max_changed_lines": 6000}, "failure_action": "adapt"
+    },
+    "stage8_yaml_generate": {
+      "owner": "yaml-writer-agent", "kind": "deterministic", "depends_on": ["stage9a_test_design"],
+      "required_inputs": ["ops/contexts/{context_id}.adapter_implementation_task.json"], "required_outputs": [],
+      "write_roots": ["adapter_plugins/{adapter_type}/**", "ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "**/*.capability.yaml", "ops/contexts/{context_id}.device_spec.json"],
+      "diff_budget": {"max_modified_files": 12, "max_changed_lines": 1500}, "failure_action": "adapt"
+    },
+    "stage10_adapter_codegen": {
+      "owner": "hal-adapter-builder", "kind": "agent_handoff", "depends_on": ["stage8_yaml_generate", "stage9a_test_design"],
+      "required_inputs": ["ops/contexts/{context_id}.adapter_implementation_task.json", "ops/artifacts/{context_id}.test_plan.json"], "required_outputs": ["ops/artifacts/{context_id}.adapter_implementation_report.json"],
+      "write_roots": ["adapter_plugins/{adapter_type}/src/**", "adapter_plugins/{adapter_type}/include/**", "adapter_plugins/{adapter_type}/CMakeLists.txt", "adapter_plugins/{adapter_type}/config/**", "adapter_plugins/{adapter_type}/model/devices/**", "adapter_plugins/{adapter_type}/README.md", "ops/artifacts/**"],
+      "deny_roots": [".git/**", "src/**", "adapter_plugins/{adapter_type}/tests/**", "**/*.capability.yaml", "ops/contexts/**"],
+      "diff_budget": {"max_modified_files": 40, "max_changed_lines": 8000}, "failure_action": "adapt"
+    },
+    "stage10_implementation_coverage": {
+      "owner": "verification-agent", "kind": "deterministic", "depends_on": ["stage10_adapter_codegen"],
+      "required_inputs": ["ops/artifacts/{context_id}.adapter_implementation_report.json"], "required_outputs": ["ops/artifacts/{context_id}.implementation_coverage.json"],
+      "write_roots": ["ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "ops/contexts/**"],
+      "failure_action": "adapt"
+    },
+    "stage10c_plugin_build": {
+      "owner": "plugin-builder-agent", "kind": "deterministic", "depends_on": ["stage10_implementation_coverage"],
+      "required_inputs": ["ops/artifacts/{context_id}.implementation_coverage.json"], "required_outputs": ["ops/artifacts/{context_id}.plugin_build.json"],
+      "write_roots": ["build/**", "ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "ops/contexts/**"],
+      "failure_action": "plugin-build"
+    },
+    "stage10c_target_plugin_build": {
+      "owner": "plugin-builder-agent", "kind": "deterministic", "depends_on": ["stage10_implementation_coverage"],
+      "required_inputs": ["ops/artifacts/{context_id}.implementation_coverage.json"], "required_outputs": ["ops/artifacts/{context_id}.target_plugin_build.json"],
+      "write_roots": ["build/**", "ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "ops/contexts/**"],
+      "failure_action": "target-plugin-build"
+    },
+    "stage11_plugin_verify": {
+      "owner": "verification-agent", "kind": "deterministic", "depends_on": ["stage10_implementation_coverage"],
+      "required_inputs": ["ops/artifacts/{context_id}.implementation_coverage.json"], "required_outputs": ["ops/artifacts/{context_id}.abi_validation.json", "ops/artifacts/{context_id}.dependency_closure.json"],
+      "write_roots": ["ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "build/**", "ops/contexts/**"],
+      "failure_action": "verify"
+    },
+    "stage11a_independent_verification": {
+      "owner": "verification-agent", "kind": "agent_handoff", "depends_on": ["stage11_plugin_verify"],
+      "required_inputs": ["ops/artifacts/{context_id}.abi_validation.json", "ops/artifacts/{context_id}.dependency_closure.json"], "required_outputs": ["ops/artifacts/{context_id}.verification_report.json"],
+      "write_roots": ["ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "build/**", "ops/contexts/**"],
+      "failure_action": "verify"
+    },
+    "stage11b_cpp_review": {
+      "owner": "c-review", "kind": "agent_handoff", "depends_on": ["stage11a_independent_verification"],
+      "required_inputs": ["ops/artifacts/{context_id}.verification_report.json"], "required_outputs": ["ops/artifacts/{context_id}.c_review_report.json"],
+      "write_roots": ["ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "build/**", "ops/contexts/**"],
+      "failure_action": "verify"
+    },
+    "stage11c_differential_review": {
+      "owner": "differential-review", "kind": "agent_handoff", "depends_on": ["stage11b_cpp_review"],
+      "required_inputs": ["ops/artifacts/{context_id}.c_review_report.json"], "required_outputs": ["ops/artifacts/{context_id}.differential_review_report.json"],
+      "write_roots": ["ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "build/**", "ops/contexts/**"],
+      "failure_action": "verify"
+    },
+    "stage11d_human_approval": {
+      "owner": "human", "kind": "human_gate", "depends_on": ["stage11c_differential_review"],
+      "required_inputs": ["ops/artifacts/{context_id}.quality_gate_report.json"], "required_outputs": ["ops/artifacts/{context_id}.human_approval.json"],
+      "write_roots": ["ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "build/**", "ops/contexts/**"],
+      "failure_action": "approve"
+    },
+    "stage12_package_manifest": {
+      "owner": "package-builder", "kind": "deterministic", "depends_on": ["stage11d_human_approval"],
+      "required_inputs": ["ops/artifacts/{context_id}.human_approval.json"], "required_outputs": ["ops/artifacts/{context_id}_adapter_plugin.tar.gz", "ops/artifacts/{context_id}.package_manifest.json"],
+      "write_roots": ["ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "ops/contexts/**"],
+      "failure_action": "package"
+    },
+    "stage13_package_verify": {
+      "owner": "package-builder", "kind": "deterministic", "depends_on": ["stage12_package_manifest"],
+      "required_inputs": ["ops/artifacts/{context_id}_adapter_plugin.tar.gz"], "required_outputs": ["ops/artifacts/{context_id}.abi_validation.json"],
+      "write_roots": ["ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "ops/contexts/**"],
+      "failure_action": "package"
+    },
+    "stage14_docker_build_x86_optional": {
+      "owner": "docker-builder", "kind": "optional", "depends_on": ["stage13_package_verify"],
+      "required_inputs": [], "required_outputs": [], "write_roots": ["ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "ops/contexts/**"], "failure_action": "docker-package"
+    },
+    "stage15_docker_build_arm64": {
+      "owner": "docker-builder", "kind": "optional", "depends_on": ["stage13_package_verify"],
+      "required_inputs": [], "required_outputs": [], "write_roots": ["ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "ops/contexts/**"], "failure_action": "docker-package"
+    },
+    "stage16_image_verify": {
+      "owner": "docker-builder", "kind": "deterministic", "depends_on": ["stage13_package_verify"],
+      "required_inputs": ["ops/contexts/{context_id}.plugin_contract.json"], "required_outputs": ["ops/artifacts/{context_id}.runtime_image_validation.json"],
+      "write_roots": ["ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "ops/contexts/**"], "failure_action": "docker-package"
+    },
+    "stage17_remote_transfer": {
+      "owner": "remote-deployer", "kind": "deterministic", "depends_on": ["stage13_package_verify"],
+      "required_inputs": ["ops/artifacts/{context_id}_adapter_plugin.tar.gz"], "required_outputs": ["ops/artifacts/{context_id}.remote_deploy.json"],
+      "write_roots": ["ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "ops/contexts/**"], "failure_action": "deploy"
+    },
+    "stage18_remote_prepare": {
+      "owner": "remote-deployer", "kind": "deterministic", "depends_on": ["stage17_remote_transfer"],
+      "required_inputs": ["ops/artifacts/{context_id}.remote_deploy.json"], "required_outputs": [],
+      "write_roots": ["ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "ops/contexts/**"], "failure_action": "deploy"
+    },
+    "stage19_remote_device_probe": {
+      "owner": "remote-tester", "kind": "deterministic", "depends_on": ["stage18_remote_prepare"],
+      "required_inputs": ["ops/contexts/{context_id}.deployment_plan.json"], "required_outputs": [],
+      "write_roots": ["ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "ops/contexts/**"], "failure_action": "test"
+    },
+    "stage20_remote_run": {
+      "owner": "remote-tester", "kind": "deterministic", "depends_on": ["stage19_remote_device_probe"],
+      "required_inputs": ["ops/contexts/{context_id}.deployment_plan.json"], "required_outputs": [],
+      "write_roots": ["ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "ops/contexts/**"], "failure_action": "test"
+    },
+    "stage21_remote_test": {
+      "owner": "remote-tester", "kind": "deterministic", "depends_on": ["stage20_remote_run"],
+      "required_inputs": ["ops/contexts/{context_id}.deployment_plan.json"], "required_outputs": ["ops/artifacts/{context_id}.remote_acceptance.json"],
+      "write_roots": ["ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "ops/contexts/**"], "failure_action": "test"
+    },
+    "stage22_collect_logs": {
+      "owner": "remote-tester", "kind": "deterministic", "depends_on": ["stage21_remote_test"],
+      "required_inputs": [], "required_outputs": [], "write_roots": ["ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "ops/contexts/**"], "failure_action": "test"
+    },
+    "stage23_failure_classification": {
+      "owner": "failure-debugger", "kind": "agent_handoff", "depends_on": ["stage0_env_check"],
+      "required_inputs": ["ops/artifacts/last_failure.json"], "required_outputs": ["ops/artifacts/{context_id}.remediation_plan.json"],
+      "write_roots": ["ops/artifacts/**"], "deny_roots": [".git/**", "src/**", "adapter_plugins/**", "ops/contexts/**"], "failure_action": "rerun"
+    }
   }
 }

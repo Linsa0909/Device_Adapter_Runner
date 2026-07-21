@@ -73,8 +73,17 @@ def class_name(adapter: str) -> str:
     return "".join(part.capitalize() for part in adapter.split("_")) + "Adapter"
 
 
+def private_config_enabled(contract: dict[str, Any]) -> bool:
+    value = contract.get("private_config")
+    return bool(isinstance(value, dict) and (value.get("required") is True or value.get("enabled") is True))
+
+
 def render_cmake(contract: dict[str, Any]) -> str:
     adapter = contract["adapter_type"]
+    config_install = (
+        f"install(FILES config/{adapter}.json DESTINATION config)\n"
+        if private_config_enabled(contract) else ""
+    )
     return f'''cmake_minimum_required(VERSION 3.16)
 project(hal_{adapter}_adapter_plugin LANGUAGES CXX)
 
@@ -103,8 +112,7 @@ set_target_properties(hal_adapter_{adapter} PROPERTIES
   INSTALL_RPATH "$ORIGIN/../deps"
 )
 install(TARGETS hal_adapter_{adapter} LIBRARY DESTINATION adapters)
-install(FILES config/{adapter}.json DESTINATION config)
-install(FILES model/devices/{adapter}.device.yaml DESTINATION model/devices)
+{config_install}install(FILES model/devices/{adapter}.device.yaml DESTINATION model/devices)
 install(FILES README.md DESTINATION .)
 '''
 
@@ -282,9 +290,10 @@ def main() -> int:
         root / f"include/{adapter}/{adapter}_adapter.hpp": render_header(contract),
         root / f"src/{adapter}_adapter.cpp": render_adapter(contract),
         root / f"src/{adapter}_plugin.cpp": render_entry(contract),
-        root / f"config/{adapter}.json": render_private_config(contract, spec),
         root / f"model/devices/{adapter}.device.yaml": "# References platform-owned capability groups.\n" + to_yaml(model) + "\n",
     }
+    if private_config_enabled(contract):
+        outputs[root / f"config/{adapter}.json"] = render_private_config(contract, spec)
     changed = [path for path, content in outputs.items() if write_output(path, content, args.force)]
     generated = Path(f"ops/artifacts/{args.context_id}.generated_files.txt")
     generated.parent.mkdir(parents=True, exist_ok=True)

@@ -70,6 +70,7 @@ def main() -> int:
     image_q = shlex.quote(str(contract["runtime_image"]))
     plugin_q = shlex.quote(f"{args.runtime_root}/adapters/libhal_adapter_{contract['adapter_type']}.so")
     config_q = shlex.quote(f"{args.runtime_root}/config/{contract['adapter_type']}.json")
+    config_required = (contract.get("private_config") or {}).get("required") is True
     remote_deployment = f"{args.runtime_root}/deployment/{contract['adapter_type']}-only.yaml"
     prepare = (f"mkdir -p {shlex.quote(remote_temp)} {root}/adapters {root}/config "
                f"{root}/deps {root}/model/devices {root}/deployment")
@@ -86,10 +87,11 @@ def main() -> int:
         ["ssh", target, f"docker image inspect {image_q} >/dev/null"],
         ["ssh", target, "uname -m"],
         ["ssh", target, f"test -f {plugin_q}"],
-        ["ssh", target, f"test -f {config_q}"],
         ["ssh", target, f"test -f {shlex.quote(remote_deployment)}"],
         ["ssh", target, f"rm -rf {shlex.quote(remote_temp)}"],
     ]
+    if config_required:
+        commands.insert(-2, ["ssh", target, f"test -f {config_q}"])
     results = []
     for item in commands:
         result = run(item)

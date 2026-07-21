@@ -8,11 +8,14 @@ usage: stage_runner.sh <action> <context_id> [options]
 actions:
   context
   package
+  model-prep
   model
   sdk-package
+  target-sdk-package
   sdk-check
   adapt
   plugin-build
+  target-plugin-build
   verify
   review
   approve
@@ -46,8 +49,14 @@ case "$action" in
   model)
     python3 "$base_dir/stage_orchestrator.py" model "$context_id" "$@"
     ;;
+  model-prep)
+    python3 "$base_dir/stage_orchestrator.py" model-prep "$context_id" "$@"
+    ;;
   sdk-package)
     python3 "$base_dir/stage_orchestrator.py" sdk-package "$context_id" "$@"
+    ;;
+  target-sdk-package)
+    python3 "$base_dir/stage_orchestrator.py" target-sdk-package "$context_id" "$@"
     ;;
   sdk-check)
     python3 "$base_dir/stage_orchestrator.py" sdk-check "$context_id" "$@"
@@ -57,6 +66,9 @@ case "$action" in
     ;;
   plugin-build)
     python3 "$base_dir/stage_orchestrator.py" plugin-build "$context_id" "$@"
+    ;;
+  target-plugin-build)
+    python3 "$base_dir/stage_orchestrator.py" target-plugin-build "$context_id" "$@"
     ;;
   verify)
     python3 "$base_dir/stage_orchestrator.py" verify "$context_id" "$@"

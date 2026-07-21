@@ -13,7 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from plugin_common import ARTIFACTS, load_contract, load_json, package_dir, resolve_project_path, sdk_arch_dir, write_json
+from plugin_common import ARTIFACTS, load_contract, load_json, package_dir, readme_contract_errors, resolve_project_path, sdk_arch_dir, write_json
 
 
 ABI_SYMBOLS = {"hal_get_adapter_sdk_abi_v1", "hal_get_adapter_plugin_v1"}
@@ -78,22 +78,35 @@ def main() -> int:
     config_path = package / f"config/{adapter}.json"
     sdk = resolve_project_path(str(contract["sdk_root"]))
 
+    private_config_contract = contract.get("private_config") or {}
+    config_required = private_config_contract.get("required") is True
     config_errors: list[str] = []
     try:
-        private_config = json.loads(config_path.read_text(encoding="utf-8"))
-        if not isinstance(private_config, dict):
-            config_errors.append("top-level config must be an object")
-        else:
-            if not private_config.get("schema_version"):
-                config_errors.append("schema_version is required")
-            if not isinstance(private_config.get("instances"), list):
-                config_errors.append("instances must be an array")
+        if config_path.is_file():
+            private_config = json.loads(config_path.read_text(encoding="utf-8"))
+            if not isinstance(private_config, dict):
+                config_errors.append("top-level config must be an object")
+            else:
+                if not private_config.get("schema_version"):
+                    config_errors.append("schema_version is required")
+                if not isinstance(private_config.get("instances"), list):
+                    config_errors.append("instances must be an array")
+        elif config_required:
+            config_errors.append("required private config is missing")
     except (OSError, json.JSONDecodeError) as exc:
         config_errors.append(str(exc))
     config_pass = not config_errors
     write_json(ARTIFACTS / f"{args.context_id}.config_validation.json", {
         "status": "PASS" if config_pass else "FAIL", "path": str(config_path),
         "errors": config_errors,
+    })
+    readme_errors = readme_contract_errors(package / "README.md", contract)
+    readme_pass = not readme_errors
+    write_json(ARTIFACTS / f"{args.context_id}.readme_validation.json", {
+        "status": "PASS" if readme_pass else "FAIL",
+        "sdk_version": contract.get("sdk_version"),
+        "sdk_abi": contract.get("sdk_abi"),
+        "errors": readme_errors,
     })
 
     file_rc, file_output = command("file", str(binary)) if binary.is_file() else (1, "plugin binary missing")
@@ -240,9 +253,10 @@ def main() -> int:
             forbidden.extend(path.relative_to(package).as_posix() for path in adapter_root.rglob("*") if path.is_dir())
         allowed_exact = {
             "README.md", f"adapters/libhal_adapter_{adapter}.so",
-            f"config/{adapter}.json",
             f"model/devices/{adapter}.device.yaml",
         }
+        if config_path.is_file():
+            allowed_exact.add(f"config/{adapter}.json")
         for path in package.rglob("*"):
             if not (path.is_file() or path.is_symlink()):
                 continue
@@ -267,7 +281,7 @@ def main() -> int:
 
     source_verifier = Path(__file__).resolve().parent / "verify_plugin_source.py"
     source_rc, source_output = command(sys.executable, str(source_verifier), args.context_id)
-    passed = all((arch_pass, abi_pass, closure_pass, declaration_pass, lint_rc == 0, not forbidden, multi_pass, config_pass, source_rc == 0))
+    passed = all((arch_pass, abi_pass, closure_pass, declaration_pass, lint_rc == 0, not forbidden, multi_pass, config_pass, readme_pass, source_rc == 0))
     if source_output:
         print(source_output)
     print(f"[AGENT_STAGE] stage=stage11_plugin_verify status={'success' if passed else 'fail'}")

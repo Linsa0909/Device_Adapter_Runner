@@ -14,12 +14,20 @@ Your job:
    - ops/contexts/<context_id>.context.md
    - ops/contexts/<context_id>.manifest.json
    - ops/contexts/<context_id>.plugin_contract.json
+   - ops/contexts/<context_id>.device_observation.json
    - ops/artifacts/<context_id>.package_files.txt
 
 Rules:
 - Preserve the user's natural language in context.md.
 - Generate manifest.json and package_files.txt; the user should not write JSON manually.
 - Do not infer new business functionality from the device name.
+- Extract requested_features from natural language, manuals, SDK headers and
+  examples. Each feature records feature_id, description, direction, required,
+  source_evidence, implementation_evidence, transport_binding and tests.
+  Capability and HAL entry candidates remain empty until the immutable HAL SDK
+  is inspected by the capability modeler.
+- Extract transport_candidates only from documented connection facts. Missing
+  Profile configuration values belong in unknowns.
 - Do not edit business code.
 - Do not package the whole repository by default.
 - Default delivery_mode is runtime_plugin.

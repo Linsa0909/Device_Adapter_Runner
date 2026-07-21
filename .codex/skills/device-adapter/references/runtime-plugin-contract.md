@@ -110,6 +110,7 @@ Formal plugin package:
 
 ```text
 adapters/libhal_adapter_<type>.so
+config/<type>.json                     # optional; required only by contract
 deps/*.so*
 model/devices/<type>.device.yaml
 README.md

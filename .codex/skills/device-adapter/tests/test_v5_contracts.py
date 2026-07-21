@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,7 @@ def load(name: str):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -44,6 +46,16 @@ class V5ContractTests(unittest.TestCase):
 
         for name in stages:
             visit(name)
+
+        orchestrator = load("stage_orchestrator")
+        self.assertEqual(set(stages), set(orchestrator.STAGES))
+        source = (ROOT / "scripts/stage_orchestrator.py").read_text()
+        self.assertNotIn("STAGES.update", source)
+        self.assertNotIn("agent_boundary_policy.json", source)
+
+    def test_legacy_stage_maps_are_not_parallel_sources(self):
+        self.assertFalse((ROOT / "scripts/agent_stage_map.json").exists())
+        self.assertFalse((ROOT / "scripts/agent_boundary_policy.json").exists())
 
     def test_platform_profile_is_fixed(self):
         profile = json.loads((ROOT / "profiles/platform/yunshu-aarch64-humble.json").read_text())
@@ -110,6 +122,29 @@ class V5ContractTests(unittest.TestCase):
         self.assertEqual("hal-adapter-builder", task["owner_agent"])
         self.assertTrue(task["implementation_requirements"])
         self.assertIn("adapter_plugins/demo/tests/**", task["write_denylist"])
+
+    def test_adapt_and_verify_define_agent_handoff_stages(self):
+        stages = json.loads((ROOT / "scripts/workflow_definition.json").read_text())["stages"]
+        for name in (
+            "stage9_pre_adapt_verification", "stage9a_test_design",
+            "stage10_adapter_codegen", "stage11a_independent_verification",
+            "stage11b_cpp_review", "stage11c_differential_review",
+        ):
+            self.assertEqual(stages[name]["kind"], "agent_handoff")
+
+    def test_review_roles_have_non_overlapping_outputs(self):
+        stages = json.loads((ROOT / "scripts/workflow_definition.json").read_text())["stages"]
+        self.assertEqual(stages["stage11a_independent_verification"]["owner"], "verification-agent")
+        self.assertEqual(stages["stage11b_cpp_review"]["owner"], "c-review")
+        self.assertEqual(stages["stage11c_differential_review"]["owner"], "differential-review")
+        prompt = (ROOT.parents[1] / "agents/verification-agent.toml").read_text()
+        self.assertNotIn("c_review_report.json", prompt)
+        self.assertNotIn("differential_review_report.json", prompt)
+
+    def test_builder_prompt_requires_machine_readable_implementation_report(self):
+        prompt = (ROOT.parents[1] / "agents/hal-adapter-builder.toml").read_text()
+        self.assertIn("adapter_implementation_report.json", prompt)
+        self.assertIn("implemented_features", prompt)
 
 
 if __name__ == "__main__":

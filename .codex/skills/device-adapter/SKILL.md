@@ -23,36 +23,46 @@ second workflow definition.
 
 ```text
 /device-adapter context <id>
-/device-adapter model-prep <id> [--host <host> --user <user>]
-/device-adapter model <id>
-/device-adapter sdk-package <id>
-/device-adapter target-sdk-package <id> [--host <host> --user <user>]
-/device-adapter sdk-check <id>
-/device-adapter adapt <id> --allow-code
-/device-adapter plugin-build <id>
-/device-adapter target-plugin-build <id> [--host <host> --user <user>]
+/device-adapter adapt <id> --allow-code --host <target> --user <user>
 /device-adapter verify <id>
-/device-adapter review <id>
 /device-adapter approve <id> --by <name>
 /device-adapter package <id>
-/device-adapter docker-package <id> -arm
 /device-adapter deploy <id> --host <host> --user <user>
 /device-adapter test <id> --host <host> --user <user>
-/device-adapter loop <id> --host <host> --user <user>
-/device-adapter logs <id> --host <host> --user <user>
-/device-adapter rerun <id>
 ```
 
-`docker-package` validates or optionally exports the declared HAL runtime image;
-it must not compile HAL or create a device-specific business image in plugin mode.
+These are the normal user-facing commands. `model-prep`, `model`,
+`target-sdk-package`, `sdk-check`, `target-plugin-build`, `review`, `rerun`,
+`status`, and artifact cleanup are advanced internal/recovery actions. They are
+not required in the normal path.
 
 ## Default Flow
 
 ```text
-context -> model-prep -> target-sdk-package -> sdk-check --bootstrap
--> model -> sdk-check -> adapt --allow-code (task -> code -> target build -> .so verify)
--> verify -> review -> human approve -> package -> deploy -> test
+context
+-> adapt --allow-code --host <target>
+   [model-prep -> SDK reuse or target-sdk-package -> sdk-check -> model
+    -> adapter task/code/tests -> target-plugin-build -> plugin verify]
+-> verify [deterministic verification -> verification Agent -> C++ review
+           -> differential review]
+-> human approve -> package -> deploy -> test
 ```
+
+Shorter commands do not remove stages. They make the orchestrator own the
+handoffs. Every internal stage validates its declared input artifacts and writes
+machine-readable stage evidence before the next stage can start.
+
+An Agent-owned stage returns exit code `24` and writes
+`ops/artifacts/<id>.agent_handoff.json`. This is an internal continuation, not a
+user-visible failure and not a request for another command. The active Codex
+run must read the handoff, invoke its owner role and required testing/review
+Skill, write only declared outputs within the declared boundary, and rerun the
+same top-level command automatically. Stop only on PASS, human approval, a real
+BLOCKED/FAIL result, or three unsuccessful handoff attempts.
+
+Do not ask whether planned tests or reports should be created. Host sandbox,
+SSH credentials, missing hardware facts, and destructive operations remain
+real external approval or blocking boundaries.
 
 Stop at the first failed gate. Use `systematic-debugging` to create evidence and
 a scoped remediation plan. Do not modify code until the user authorizes another
@@ -153,6 +163,12 @@ resolves through the Serial, CAN, UDP, TCP, USB, UVC, or Vendor SDK profiles;
 multiple bindings are allowed. Device names never select capabilities or
 transports.
 
+The capability-modeler reasons from the current context and cited manual/SDK
+evidence. It selects exact SDK-owned properties, services, events and FastPath
+topics. It must not bind behavior from camera/radar/lidar/IMU or other device
+category names, and must not copy undocumented behavior from an earlier
+Adapter. Ambiguous mappings remain BLOCKED.
+
 ## Adapt Coding Loop
 
 `adapt --allow-code` is one Codex-level closed loop:
@@ -165,6 +181,11 @@ transports.
 5. Build in the declared AArch64 ROS 2 Humble runtime container and verify the
    resulting `.so` ABI, architecture, RPATH, dependency closure, model and config.
 6. Run independent verification, C++ review and differential review.
+
+`ops/artifacts/<id>.implementation_coverage.json` must prove every requested
+feature is connected through an exact HAL entry, Adapter handler, Device
+Backend, selected Transport, device response/output and independent test. A
+scaffold or a report that omits one inferred feature cannot pass quality gates.
 
 Missing protocol/SDK evidence returns `BLOCKED`; missing target build conditions
 returns `TARGET_BUILD_ENVIRONMENT_UNAVAILABLE`. A generated fail-closed skeleton
@@ -328,6 +349,9 @@ writes evidence only under `ops/artifacts/` and checks:
 After deterministic checks, the read-only verification Agent must use
 `verification-before-completion`, `c-review` for C/C++, and
 `differential-review`. Hardware checks not executed are `NOT_RUN`, never PASS.
+These are separate stage11a, stage11b, and stage11c Agent handoffs. The same
+`/device-adapter verify <id>` command resumes between them without another user
+command.
 
 Reports include:
 
@@ -360,15 +384,26 @@ manifest change invalidates approval.
 
 ## Formal Package
 
-The default package is exactly:
+The default package requires:
 
 ```text
 adapters/libhal_adapter_<adapter_type>.so
-config/<adapter_type>.json
-deps/*.so*                              # private dependencies only, optional
 model/devices/<adapter_type>.device.yaml
 README.md
 ```
+
+Optional entries are:
+
+```text
+config/<adapter_type>.json              # private configuration, when enabled
+deps/*.so*                              # private dependencies only
+```
+
+`config/<adapter_type>.json` is generated, installed, and required only when
+`plugin_contract.private_config.required=true` or the contract explicitly sets
+`private_config.enabled=true`.
+README validation is intentionally limited to the declared HAL Adapter SDK
+version and SDK ABI.
 
 One formal package declares exactly one `adapter_type`.
 
@@ -428,16 +463,19 @@ single-device `<id>.deployment.yaml`. `deploy` installs that YAML under the
 runtime `deployment/` directory. Generated acceptance checks are executable
 where current hardware permits; checks requiring a second physical device,
 manual disconnect, or an undeclared fault injector remain explicit `NOT_RUN`.
-Stage21 executes all runnable checks before returning BLOCKED for those items.
+Stage21 executes all runnable checks. If they pass while reserved hardware
+checks remain, it returns success with status `PASS_WITH_NOT_RUN`; the report
+retains every `NOT_RUN` item and does not represent it as verified.
 
 ## State And Failure
 
 Every stage emits human-readable markers and machine-readable JSON:
 
 ```text
-[AGENT_STAGE] stage=<stage> status=start|success|fail
+[AGENT_STAGE] stage=<stage> status=start|success|waiting_agent|waiting_approval|fail
 ops/artifacts/stages/<id>/<stage>.json
 ops/artifacts/<id>.status.json
+ops/artifacts/<id>.agent_handoff.json
 ops/artifacts/logs/<id>_stage_runner.log
 ```
 

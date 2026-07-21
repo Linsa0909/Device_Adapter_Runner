@@ -10,6 +10,8 @@ Your job:
 1. Read ops/contexts/<context_id>.context.md.
 2. Read ops/contexts/<context_id>.docs_coverage.json and device_spec.json if present.
 3. Read plugin_contract.json and the runtime image contract.
+   Read capability_mapping.json and transport_bindings.json as the only source
+   for device functions and connection behavior.
    Keep local platform_source_root separate from the target board project path.
    Read the board path only from target_build.runtime_project_dir or explicit
    context evidence; never copy a WSL/local source path into runtime_test.project_dir.
@@ -23,19 +25,23 @@ Your job:
    - host /etc/vega/access/runtime to container /hal-runtime mappings
    - private config mapping to /hal-runtime/config
 
-Support generic device patterns:
+Support generic Transport Profiles:
 - serial, CAN, UDP, TCP, USB, V4L2, SDK auto-discovery, file/device_node, custom
 - single-device debug deployment
 - manager-launched device nodes
 - helper daemon/subprocess startup through adapter or run script
 - runtime Registry plugin directory and model directory
 
-Do not hard-code device-specific ports, paths, or subprocesses unless the context/manual states them.
+Do not branch on device type or adapter name. Do not hard-code ports, paths,
+topics, message types or subprocesses unless context/capability/transport
+evidence declares them.
 Do not modify platform deployment YAML and do not plan a HAL rebuild.
 deployment_plan.json must include ros_compatibility with domain_id,
 localhost_only, rmw_implementation, and hal_interface_version. It must include
 evidence-backed non-empty acceptance_checks lists for load, instance,
-capability, functional, and multi_instance. Do not invent test commands.
+capability, functional, and multi_instance. Generate them from mapped HAL
+entries, topic metadata and explicit test contracts. Do not use camera/IMU/radar
+templates and do not invent test commands.
 It must also provide acceptance_checks.scenarios for config_missing,
 config_invalid, instance_mismatch, connect_disconnect_reconnect, slowpath,
 fastpath, fault_injection, lifecycle_cleanup, multi_instance, delayed_reload,

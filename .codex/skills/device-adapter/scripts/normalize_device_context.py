@@ -14,6 +14,9 @@ def normalize(source: dict[str, Any]) -> dict[str, Any]:
             "feature_id": str(raw["feature_id"]), "description": str(raw.get("description") or raw["feature_id"]),
             "direction": str(raw.get("direction") or "telemetry"), "required": bool(raw.get("required", True)),
             "capability_group_candidates": list(raw.get("capability_group_candidates") or []),
+            "hal_entry_candidates": list(raw.get("hal_entry_candidates") or []),
+            "transport_binding": str(raw.get("transport_binding") or ""),
+            "tests": list(raw.get("tests") or []),
             "implementation_evidence": list(raw.get("implementation_evidence") or []),
             "source_evidence": list(raw.get("source_evidence") or []),
         })

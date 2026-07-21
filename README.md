@@ -5,17 +5,47 @@ HAL runtime Adapter plugins for unmanned-system devices. It consumes a versioned
 HAL Adapter SDK and delivers a plugin `.so`, private dependencies, one device
 model, and release evidence without rebuilding or modifying the HAL platform.
 
+## Version Baselines
+
+- `v1.1`: authoritative Stage DAG, context-derived capability/transport mapping,
+  bounded Agent continuation, optional private configuration, independent
+  verification/C++/differential review gates, and one canonical Skill source.
+- `v1.0`: previous runtime-plugin workflow checkpoint retained for rollback and
+  behavior comparison.
+
+Inspect a release without moving `main`:
+
+```bash
+git switch --detach v1.1
+git switch main
+```
+
+Create an isolated rollback branch from the earlier baseline:
+
+```bash
+git switch -c rollback/v1.0 v1.0
+```
+
+The repository copy at `.codex/skills/device-adapter` is authoritative. The
+global Codex installation should point to that directory rather than maintain a
+second copied Skill, so repository and global behavior cannot drift.
+
 ## Default Contract
 
 The default product is:
 
 ```text
 adapters/libhal_adapter_<adapter_type>.so
-config/<adapter_type>.json
-deps/*.so*                              # optional private dependencies
 model/devices/<adapter_type>.device.yaml
 README.md
+
+config/<adapter_type>.json              # optional private configuration
+deps/*.so*                              # optional private dependencies
 ```
+
+`config/<adapter_type>.json` is optional and becomes mandatory only when
+`plugin_contract.private_config.required=true`. The deterministic README gate
+checks only the HAL Adapter SDK version and SDK ABI against the plugin contract.
 
 The workflow does not create capability YAML, add a Factory branch, modify the
 platform main CMake, or build a per-device Docker image. Platform capability
@@ -47,32 +77,33 @@ sudo apt install -y poppler-utils tesseract-ocr \
 
 ```text
 /device-adapter context <id>
-/device-adapter model-prep <id>
-/device-adapter target-sdk-package <id> --host <arm64-host> --user root
-/device-adapter sdk-check <id>
-/device-adapter model <id>
-/device-adapter adapt <id> --allow-code
-/device-adapter target-plugin-build <id> --host <arm64-host> --user root
+/device-adapter adapt <id> --allow-code --host <arm64-host> --user root
 /device-adapter verify <id>
-/device-adapter review <id>
 /device-adapter approve <id> --by <name>
 /device-adapter package <id>
 /device-adapter deploy <id> --host <host> --user root
 /device-adapter test <id> --host <host> --user root
 ```
 
-When the board HAL workspace is not part of the docs contract, supply it during
-modeling instead of reusing a temporary SDK build directory:
+`adapt` owns the internal preparation chain: model preparation, reuse or remote
+generation of the immutable SDK, SDK validation, formal model mapping, bounded
+plugin implementation, target-container build, and static plugin verification.
+`verify` owns deterministic verification and the required read-only verification,
+C/C++ review, and differential-review gates. Advanced stage commands remain
+available for diagnostics and precise reruns, but are not part of normal use.
 
-```text
-/device-adapter model gemini335 --project-dir /home/Gemini335
-```
+The normal `adapt` command does not require a board project path. Stage5 first
+uses `target_build.runtime_project_dir`; otherwise it reuses the unique remote
+workspace recorded by the successful `target-sdk-package` report. Explicit
+`--project-dir` remains a stage21 test override for exceptional board layouts,
+not a normal Adapter-development input.
 
 Stage5 generates the machine-readable deployment plan and one-device deployment
-YAML. Deploy installs the YAML into the runtime tree; stage21 uses the board path
-only to mount the existing HAL `install/` workspace into the runtime container.
+YAML from the resolved transport bindings. Deploy installs the YAML into the
+runtime tree; stage21 mounts the evidence-backed HAL `install/` workspace into
+the runtime container.
 
-Use the deterministic runner when slash commands are unavailable:
+Advanced recovery commands, also available through the deterministic runner:
 
 ```bash
 bash .codex/skills/device-adapter/scripts/stage_runner.sh model-prep <id>
@@ -151,7 +182,7 @@ adapter_plugins/<adapter_type>/
   include/<adapter_type>/<adapter_type>_adapter.hpp
   src/<adapter_type>_adapter.cpp
   src/<adapter_type>_plugin.cpp
-  config/<adapter_type>.json
+  config/<adapter_type>.json    # only when private_config is enabled
   model/devices/<adapter_type>.device.yaml
   third_party/                 # optional
   cmake/VendorizeRuntime.cmake # optional
@@ -203,6 +234,18 @@ profiles. Missing facts block coding instead of being inferred from a device
 name. Independent tests are owned by the test-design Agent; the implementation
 Agent cannot modify those tests or the HAL platform source. Deployment verifies
 local and remote SHA-256 values before unpacking the plugin package.
+
+Mapping is based on the current context and cited protocol/SDK evidence down to
+individual HAL properties, services, events and topics. Device category names
+and behavior from previous Adapters are not mapping inputs. The implementation
+coverage gate then requires a source function, Backend method, Transport binding
+and independent test for every mapped feature.
+
+Agent-owned stages write `ops/artifacts/<id>.agent_handoff.json` and return an
+internal continuation code. Codex runs the bounded owner Agent and resumes the
+same top-level command; users do not issue separate model, SDK, build, or review
+commands during the normal path. The handoff records Git/file-state baselines,
+and the resumed stage rejects any write outside the workflow DAG boundary.
 
 ### Workflow Authorization
 
@@ -274,6 +317,11 @@ selection mismatch, reconnect, SlowPath, FastPath, fault injection, lifecycle
 cleanup, two real instances, delayed reload, and soak. Every scenario carries an
 executable command, expected result, and evidence path; missing coverage is
 BLOCKED before remote execution.
+
+When all executable single-device checks pass but reserved physical checks
+(such as a second real device or controlled disconnect) cannot run, stage21
+returns `PASS_WITH_NOT_RUN`. The report retains those items and does not count
+them as verified delivery evidence.
 
 Each group contains evidence-driven commands and expected output. Service
 discovery, process existence, and container startup alone are not success.

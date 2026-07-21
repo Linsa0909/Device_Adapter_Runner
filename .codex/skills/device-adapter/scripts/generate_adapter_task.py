@@ -14,7 +14,9 @@ def build_task(context_id: str, contract: dict[str,Any], mapping: dict[str,Any],
         "write_allowlist":[f"{root}/src/**",f"{root}/include/**",f"{root}/CMakeLists.txt",f"{root}/config/**",f"{root}/cmake/**"],
         "write_denylist":["src/hardware_abstraction_layer/**","**/*.capability.yaml",f"{root}/tests/**"],
         "completion_outputs":[f"ops/artifacts/{context_id}.adapter_implementation_report.json"],
-        "blocked_gaps":list(mapping.get("unmapped_features",[]))+list(transports.get("gaps",[]))}
+        "reasoning_policy":"current_context_and_immutable_sdk_only",
+        "forbidden_inference":["device-name category binding","undocumented behavior copied from previous adapters"],
+        "blocked_gaps":list(mapping.get("unmapped_features",[]))+list(mapping.get("conflicts",[]))+list(transports.get("gaps",[]))}
 
 def main() -> int:
     parser=argparse.ArgumentParser(); parser.add_argument("context_id"); args=parser.parse_args(); base=Path("ops/contexts")
